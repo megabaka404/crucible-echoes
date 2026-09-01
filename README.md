@@ -27,12 +27,18 @@ py -3 game.py new --seed 42 --difficulty 10 --fun-mode minimal
 py -3 game.py new --seed 42 --difficulty 10 --fun-mode mutation
 ```
 
-省略时为 `none`。`giant` 使用40格并复制成分、翻倍 Delete Token 和订单目标；
-`rapid` 每回合自动删除一个成分、提供两次普通成分奖励并翻倍 Roll Token；
-`blind_box` 将每次成分获得独立随机化，第4份主线订单起目标按80%向上取整，
-并把 Roll Token 独立转换为 Delete 或 Essence；`minimal` 使用12格、按稀有度给成分
-加值、翻倍永久成长并在每份订单后给一个 Delete Token；`mutation` 让正常成分每被
-抽到5次后变为同级（1%升级）的另一成分。娱乐模式不会改变 `none` 的规则。
+省略时为 `none`。每局最多选择一种娱乐模式，且与 D1-D15 难度独立：
+
+| 模式 | 简要说明 |
+|---|---|
+| `none` | 标准规则。 |
+| `giant` | 5×8（40格）实验台；成分复制、订单目标和 Delete Token 获取量翻倍。 |
+| `rapid` | 每回合自动移除一个成分；获得两次普通成分选择；Roll Token 获取量翻倍。 |
+| `blind_box` | 每次加入成分时随机化身份；第4份主线订单起目标按 `ceil(×0.8)`；Roll Token随机转为 Delete 或 Essence。 |
+| `minimal` | 3×4（12格）实验台；成分按稀有度额外加值；永久成长翻倍；每份成功订单额外获得1个 Delete Token。 |
+| `mutation` | 正常成分每被抽到5次便变异为同级其他成分；每次变异有1%概率升级稀有度。 |
+
+娱乐模式不会改变标准 `none` 规则。
 
 默认存档为 `.saves/current.json`，可用 `--save path.json` 指定其他路径。
 
