@@ -32,11 +32,11 @@ py -3 game.py new --seed 42 --difficulty 10 --fun-mode mutation
 | 模式 | 简要说明 |
 |---|---|
 | `none` | 标准规则。 |
-| `giant` | 5×8（40格）实验台；成分复制、订单目标和 Delete Token 获取量翻倍。 |
+| `giant` | 5×8（40格）实验台；成分复制、订单目标按 `ceil(×1.75)`、Delete Token 获取量翻倍。 |
 | `rapid` | 每回合自动移除一个成分；获得两次普通成分选择；Roll Token 获取量翻倍。 |
-| `blind_box` | 每次加入成分时随机化身份；第4份主线订单起目标按 `ceil(×0.8)`；Roll Token随机转为 Delete 或 Essence。 |
-| `minimal` | 3×4（12格）实验台；成分按稀有度额外加值；永久成长翻倍；每份成功订单额外获得1个 Delete Token。 |
-| `mutation` | 正常成分每被抽到5次便变异为同级其他成分；每次变异有1%概率升级稀有度。 |
+| `blind_box` | 每次加入成分时随机化身份；第4份主线订单起目标按 `ceil(×0.85)`；Roll Token随机转为 Delete 或 Essence。 |
+| `minimal` | 3×4（12格）实验台；成分按稀有度额外加值；永久成长翻倍；每完成2份成功订单获得1个 Delete Token。 |
+| `mutation` | 每5次 spin 后，全池正常成分同时变异为同级其他成分；每个实例独立有1%概率升级稀有度，并保留永久成长。 |
 
 娱乐模式不会改变标准 `none` 规则。
 

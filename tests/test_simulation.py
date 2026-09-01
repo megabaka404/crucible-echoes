@@ -19,10 +19,32 @@ from crucible_echoes.simulation import (
     run_difficulty_sweep,
     simulate_game,
     strategy_from_name,
+    validate_simulation_state,
 )
 
 
 class SimulationTests(unittest.TestCase):
+    def test_state_validation_accepts_embedded_bundle_options(self) -> None:
+        engine = GameEngine()
+        engine.new_game(4242)
+        engine.s.pending.append(
+            PendingChoice(
+                kind="bundle",
+                offers=["accept_pigments"],
+                can_skip=False,
+                source="pigment_box",
+                details={
+                    "options": {
+                        "accept_pigments": {
+                            "id": "accept_pigments",
+                            "name": "全部获得",
+                        }
+                    }
+                },
+            )
+        )
+        self.assertEqual([], validate_simulation_state(engine))
+
     def test_same_seed_reproduces_batch_and_strategy(self) -> None:
         first = run_batch(games=6, seed=12345, difficulty=2)
         second = run_batch(games=6, seed=12345, difficulty=2)
@@ -459,6 +481,30 @@ class SimulationTests(unittest.TestCase):
         record = simulate_game(42, strategy=FirstOfferStrategy(), max_actions=1000)
         self.assertEqual("first-offer-test", FirstOfferStrategy.name)
         self.assertLessEqual(record.action_count, 1000)
+
+    def test_simulation_processes_pigment_bundle_without_run_end_error(self) -> None:
+        class FirstOfferStrategy(HeuristicStrategy):
+            name = "first-offer-bundle-test"
+
+            def choose(self, engine, choice):
+                return 1 if choice.offers else None
+
+        def on_start(engine: GameEngine) -> None:
+            engine.add_item("pigment_box")
+
+        record = simulate_game(
+            424242,
+            difficulty=7,
+            strategy=FirstOfferStrategy(),
+            on_start=on_start,
+            max_actions=250,
+        )
+        self.assertIsNone(record.error)
+        self.assertTrue(any(
+            choice.get("kind") == "bundle"
+            and choice.get("selected") == "accept_pigments"
+            for choice in record.strategy_events["choices"]
+        ))
 
     def test_simulate_game_on_start_hook_runs_before_first_spin(self) -> None:
         seen: list[tuple[int, str]] = []

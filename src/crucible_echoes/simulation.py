@@ -1288,23 +1288,28 @@ def validate_simulation_state(engine: GameEngine) -> list[str]:
         errors.append("spins_left<0")
     if any(int(value) < 0 for value in state.tokens.values()):
         errors.append("token<0")
-    if any(int(instance.mutation_draw_count) < 0 for instance in state.ingredients):
-        errors.append("mutation_draw_count<0")
     uids = [instance.uid for instance in state.ingredients]
     if len(uids) != len(set(uids)):
         errors.append("duplicate_ingredient_uid")
     for choice in state.pending:
-        collection = (
-            engine.catalog.ingredients
-            if choice.kind == "ingredient"
-            else engine.catalog.items
-            if choice.kind == "item"
-            else engine.catalog.essences
-            if choice.kind == "essence"
-            else {def_id: engine._definition_view("run_end", def_id) for def_id in choice.offers}
-        )
-        if choice.kind == "bundle":
+        # Bundle offers are definitions embedded in the pending choice, not
+        # run-end option IDs.  Resolve this branch before the fallback that
+        # calls _definition_view("run_end", ...); otherwise a bundle such as
+        # pigment_box's ``accept_pigments`` is incorrectly rejected as an
+        # unknown run-end option during simulation validation.
+        if choice.kind == "ingredient":
+            collection = engine.catalog.ingredients
+        elif choice.kind == "item":
+            collection = engine.catalog.items
+        elif choice.kind == "essence":
+            collection = engine.catalog.essences
+        elif choice.kind == "bundle":
             collection = choice.details.get("options", {})
+        else:
+            collection = {
+                def_id: engine._definition_view("run_end", def_id)
+                for def_id in choice.offers
+            }
         if any(def_id not in collection for def_id in choice.offers):
             errors.append("pending_offer_missing_definition")
     return errors

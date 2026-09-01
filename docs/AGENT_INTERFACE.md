@@ -33,8 +33,10 @@ The JSON envelope contains:
   permanent component-generation switches; `ingredient_generation_bonus`
   reports the permanent value bonus applied to generator ingredients;
 - `state.fun_mode` identifies the mutually exclusive entertainment mode
-  (`none`, `giant`, `rapid`, `blind_box`, `minimal`, or `mutation`); every
-  ingredient instance also exposes its persisted `mutation_draw_count`;
+  (`none`, `giant`, `rapid`, `blind_box`, `minimal`, or `mutation`). Giant
+  uses `ceil(×1.75)` order targets, blind-box uses `ceil(×0.85)` from mainline
+  order 4, minimal awards one Delete Token per two successful orders, and
+  mutation transforms the whole normal ingredient pool after every fifth spin;
 - `available_actions`: executable command strings for the next step; toggleable
   items expose `toggle ITEM_ID`, and bundle rewards expose one `choose N`
   action for the all-or-nothing option;

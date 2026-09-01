@@ -43,11 +43,11 @@ COMMAND_HELP = """可用命令：
   help                               显示本帮助
   quit                               退出交互模式
 
-娱乐模式：none（默认）、giant（40格/目标×2/成分与删除Token翻倍）、
+娱乐模式：none（默认）、giant（40格/目标×1.75/成分与删除Token翻倍）、
 rapid（每回合自动删1个成分/两次普通成分奖励/Roll Token翻倍）、
-blind_box（成分身份随机化/第4单起主线目标×0.8/Roll转Delete或Essence）、
-minimal（12格/按稀有度加值/永久成长翻倍/每单+1删除Token）、
-mutation（成分抽到5次后变异，1%升级稀有度）。
+blind_box（成分身份随机化/第4单起主线目标×0.85/Roll转Delete或Essence）、
+minimal（12格/按稀有度加值/永久成长翻倍/每完成2单+1删除Token）、
+mutation（每5次spin后全池正常成分同时变异，1%升级稀有度）。
 """
 
 
@@ -193,8 +193,7 @@ def render(engine: GameEngine, *, inventory: bool = False) -> str:
         lines.append("成分库存：")
         for index, inst in enumerate(state.ingredients, 1):
             row = engine.catalog.ingredients[inst.def_id]
-            mutation = f" 变异抽取{inst.mutation_draw_count}" if state.fun_mode == "mutation" else ""
-            lines.append(f"  {index}. {row['name']} [{inst.def_id}] {row.get('rarity',0)}级 基础{row.get('base',0):+d} 永久{inst.permanent_bonus:+d} 年龄{inst.age}{mutation}")
+            lines.append(f"  {index}. {row['name']} [{inst.def_id}] {row.get('rarity',0)}级 基础{row.get('base',0):+d} 永久{inst.permanent_bonus:+d} 年龄{inst.age}")
         lines.append("道具：")
         lines.extend(f"  - {engine.catalog.items[x]['name']} [{x}]：{engine.catalog.items[x]['description']}" for x in state.items)
         if not state.items: lines.append("  （无）")

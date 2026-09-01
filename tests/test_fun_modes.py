@@ -25,10 +25,10 @@ class FunModeTests(unittest.TestCase):
         legacy = normal.s.to_dict()
         legacy.pop("fun_mode")
         for row in legacy["ingredients"]:
-            row.pop("mutation_draw_count", None)
+            row["mutation_draw_count"] = 4
         restored = GameEngine().bind(GameState.from_dict(legacy))
         self.assertEqual("none", restored.s.fun_mode)
-        self.assertTrue(all(x.mutation_draw_count == 0 for x in restored.s.ingredients))
+        self.assertTrue(all(not hasattr(x, "mutation_draw_count") for x in restored.s.ingredients))
 
     def test_cli_and_agent_accept_new_modes_and_report_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -59,11 +59,11 @@ class FunModeTests(unittest.TestCase):
         engine.gain_token("roll", 1, "测试")
         self.assertEqual(2, engine.s.tokens["remove"])
         self.assertEqual(1, engine.s.tokens["roll"])
-        self.assertEqual(2850, engine.current_order_for(12, 11, {}, fun_mode="giant")[0])
+        self.assertEqual(2494, engine.current_order_for(12, 11, {}, fun_mode="giant")[0])
         engine.s.endless_mode = True
         engine.s.endless_order = 1
         engine.s.endless_target = 1000
-        self.assertEqual((2000, 10), engine.current_order())
+        self.assertEqual((1750, 10), engine.current_order())
         engine.s.endless_mode = False
         engine.s.peace_mode = True
         self.assertEqual((0, 7), engine.current_order())
@@ -102,13 +102,13 @@ class FunModeTests(unittest.TestCase):
         self.assertEqual(0, engine.s.tokens["roll"])
         self.assertEqual(3, engine.s.tokens["remove"] + engine.s.tokens["essence"])
         engine.s.order_index = 3
-        self.assertEqual((120, 6), engine.current_order())
+        self.assertEqual((128, 6), engine.current_order())
         engine.s.endless_mode = True
         engine.s.endless_target = 1000
         engine.s.endless_order = 1
         self.assertEqual((1000, 10), engine.current_order())
 
-    def test_minimal_has_twelve_cells_value_bonus_growth_double_and_order_token(self) -> None:
+    def test_minimal_has_twelve_cells_value_bonus_growth_and_every_second_order_token(self) -> None:
         engine = GameEngine()
         engine.new_game(29, fun_mode="minimal")
         self.assertEqual(3, len(engine.s.ingredients))
@@ -135,6 +135,10 @@ class FunModeTests(unittest.TestCase):
         engine.s.spins_left = 1
         engine._board = []
         engine.spin()
+        self.assertEqual(0, engine.s.tokens["remove"])
+        engine.s.pending.clear()
+        engine.s.gold = 100000
+        engine._settle_order()
         self.assertEqual(1, engine.s.tokens["remove"])
 
     def test_minimal_doubles_persistent_generator_bonus_from_ban_essence(self) -> None:
@@ -152,7 +156,7 @@ class FunModeTests(unittest.TestCase):
         engine.s.flags["global_permanent_bonuses"]["magic_magic"] = 2
         self.assertEqual(12, engine._base_values()[0])
 
-    def test_mutation_counts_per_instance_and_preserves_only_permanent_bonus(self) -> None:
+    def test_mutation_runs_globally_every_fifth_spin_and_preserves_permanent_bonus(self) -> None:
         engine = GameEngine()
         engine.new_game(31, fun_mode="mutation")
         engine.s.ingredients.clear()
@@ -163,29 +167,24 @@ class FunModeTests(unittest.TestCase):
         first.counter = 4
         first.stored_gold = 7
         first.flags["old_state"] = True
-        engine._board = [first]
-        engine._coords = [(0, 0)]
-        for _ in range(4):
-            engine._mark_mutation_draws()
-        self.assertEqual(4, first.mutation_draw_count)
-        self.assertEqual(0, second.mutation_draw_count)
-        engine._mark_mutation_draws()
         before_added = engine.s.stats["event_counts"].get("ingredient_added", 0)
+        engine.s.spin = 4
         engine._process_mutations()
-        self.assertEqual(0, first.mutation_draw_count)
+        self.assertEqual("water", first.def_id)
+        self.assertEqual("water", second.def_id)
+        engine.s.spin = 5
+        engine._board = []
+        engine._process_mutations()
         self.assertNotEqual("water", first.def_id)
+        self.assertNotEqual("water", second.def_id)
+        self.assertEqual("slag", slag.def_id)
         self.assertEqual(5, first.permanent_bonus)
         self.assertEqual(0, first.age)
         self.assertEqual(0, first.counter)
         self.assertEqual(0, first.stored_gold)
         self.assertEqual({}, first.flags)
         self.assertEqual(before_added, engine.s.stats["event_counts"].get("ingredient_added", 0))
-        engine._board = [second]
-        engine._mark_mutation_draws()
-        self.assertEqual(1, second.mutation_draw_count)
-        engine._board = [slag]
-        engine._mark_mutation_draws()
-        self.assertEqual(0, slag.mutation_draw_count)
+        self.assertIn("第5次全局变异开始。", engine.s.last_log)
 
     def test_mutation_upgrade_and_repeat_are_deterministic_and_saveable(self) -> None:
         def prepare() -> GameEngine:
@@ -195,7 +194,7 @@ class FunModeTests(unittest.TestCase):
             instance = result.add_ingredient("gem_ore", emit=False)
             result._board = [instance]
             result._coords = [(0, 0)]
-            instance.mutation_draw_count = 5
+            result.s.spin = 5
             result.r.random = lambda: 0.0  # type: ignore[method-assign]
             result._process_mutations()
             return result
@@ -204,7 +203,7 @@ class FunModeTests(unittest.TestCase):
         second = prepare()
         self.assertEqual(first.s.to_dict(), second.s.to_dict())
         self.assertEqual(3, first.catalog.ingredients[first.s.ingredients[0].def_id]["rarity"])
-        self.assertEqual(0, first.s.ingredients[0].mutation_draw_count)
+        self.assertTrue(any("升级变异" in line for line in first.s.last_log))
         snapshot = copy.deepcopy(first.s.to_dict())
         restored = GameEngine().bind(GameState.from_dict(snapshot))
         self.assertEqual(snapshot, restored.s.to_dict())

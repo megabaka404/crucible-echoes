@@ -13,15 +13,15 @@ class IngredientInstance:
     counter: int = 0
     stored_gold: int = 0
     flags: dict[str, Any] = field(default_factory=dict)
-    # ``mutation`` entertainment mode keeps this per-instance counter.  It is
-    # a dataclass field (rather than a process-local map) so stateless Agent
-    # actions and JSON saves preserve it naturally.  Older saves omit it and
-    # receive the default zero during deserialization.
-    mutation_draw_count: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "IngredientInstance":
-        return cls(**data)
+        # Mutation v2 used a per-instance ``mutation_draw_count`` field.  The
+        # current global five-spin mutation no longer needs it, but old saves
+        # may still contain the key.  Read only the instance fields understood
+        # by the current model so those saves remain loadable.
+        fields = {"uid", "def_id", "permanent_bonus", "age", "counter", "stored_gold", "flags"}
+        return cls(**{key: data[key] for key in fields if key in data})
 
 
 @dataclass
@@ -97,6 +97,7 @@ class GameState:
         stats.setdefault("highest_endless_order", 0)
         stats.setdefault("highest_endless_single_turn_gold", 0)
         stats.setdefault("highest_single_turn_gold", 0)
+        stats.setdefault("minimal_successful_orders", 0)
         copied["stats"] = stats
         copied.setdefault("endless_mode", False)
         copied.setdefault("endless_order", 0)

@@ -88,6 +88,7 @@ class GameEngine:
                 "highest_endless_order": 0,
                 "highest_endless_single_turn_gold": 0,
                 "highest_single_turn_gold": 0,
+                "minimal_successful_orders": 0,
             },
             flags={
                 "choice_minimum_count": 0,
@@ -142,6 +143,7 @@ class GameEngine:
         self.s.stats.setdefault("highest_endless_order", 0)
         self.s.stats.setdefault("highest_endless_single_turn_gold", 0)
         self.s.stats.setdefault("highest_single_turn_gold", 0)
+        self.s.stats.setdefault("minimal_successful_orders", 0)
         self.s.flags.setdefault("choice_minimum_count", 0)
         self.s.flags.setdefault("choice_minimum_rarity", 0)
         self.s.flags.setdefault("choice_minimum_reserved", 0)
@@ -246,16 +248,16 @@ class GameEngine:
         """Apply entertainment-mode order changes after normal difficulty.
 
         Peace orders are explicitly zero and endless orders are exempt from
-        blind-box's mainline discount.  Giant mode doubles every payable
+        blind-box's mainline discount. Giant mode multiplies every payable
         target, including endless and difficulty-generated final orders.
         """
         resolved = max(0, int(amount))
         if peace:
             return 0
         if fun_mode == "blind_box" and not endless and int(order_number) >= 4:
-            resolved = (resolved * 4 + 4) // 5  # ceil(resolved * 0.8)
+            resolved = (resolved * 85 + 99) // 100  # ceil(resolved * 0.85)
         if fun_mode == "giant":
-            resolved *= 2
+            resolved = (resolved * 7 + 3) // 4  # ceil(resolved * 1.75)
         return resolved
 
     def board_capacity(self) -> int:
@@ -1133,7 +1135,6 @@ class GameEngine:
         for inst in self._board:
             inst.age += 1
             inst.counter += 1
-        self._mark_mutation_draws()
         self._trigger_context_essences("board_tag_appearance", instances=list(self._board))
         self._panorama = "panorama_mirror" in self.s.items and self.s.spin % 3 == 0
         if self._panorama:
@@ -1383,25 +1384,16 @@ class GameEngine:
             and definition.get("offerable", True)
         )
 
-    def _mark_mutation_draws(self) -> None:
-        """Count board appearances per instance for mutation mode."""
-        if self.s.fun_mode != "mutation":
-            return
-        for instance in self._board:
-            if self._mutation_eligible(instance):
-                instance.mutation_draw_count += 1
-
     def _mutate_instance(self, instance: IngredientInstance) -> bool:
         """Mutate one existing instance without using the gain pipeline."""
         if not self._mutation_eligible(instance):
-            instance.mutation_draw_count = 0
             return False
         old_id = instance.def_id
         old_rarity = int(self.catalog.ingredients[old_id].get("rarity", 1))
         # The 1% roll is an additional RNG draw only in mutation mode.  At
         # rarity 4 it intentionally stays in the rarity-4 pool.
-        upgrade_roll = self.r.random()
-        upgraded = old_rarity < 4 and upgrade_roll < 0.01
+        upgrade_hit = self.r.random() < 0.01
+        upgraded = old_rarity < 4 and upgrade_hit
         target_rarity = min(4, old_rarity + (1 if upgraded else 0))
         candidates = self._defs_at_rarity("ingredient", target_rarity, exclude={old_id})
         if not candidates:
@@ -1420,18 +1412,33 @@ class GameEngine:
         instance.counter = 0
         instance.stored_gold = 0
         instance.flags = {}
-        instance.mutation_draw_count = 0
+        # A global generation-ban bonus still applies to a generator after it
+        # transforms, but this is not a gain event and does not copy any old
+        # mechanism state.
+        self._apply_generation_bonus_to_instance(instance)
         self.emit("mutated")
         old_name = self.catalog.ingredients[old_id]["name"]
         new_name = self.catalog.ingredients[new_id]["name"]
-        self.s.last_log.append(f"{old_name}变异为{new_name}。")
+        if upgraded and old_rarity < 4:
+            marker = "【升级变异】"
+        elif upgrade_hit:
+            marker = "【最高稀有度】"
+        else:
+            marker = ""
+        self.s.last_log.append(
+            f"{old_name}（{old_rarity}级）→ {new_name}（{target_rarity}级）{marker}"
+        )
         return True
 
     def _process_mutations(self) -> None:
-        if self.s.fun_mode != "mutation":
+        if self.s.fun_mode != "mutation" or self.s.spin <= 0 or self.s.spin % 5:
             return
-        for instance in list(self._board):
-            if self._present(instance) and instance.mutation_draw_count >= 5:
+        self.s.last_log.append(f"第{self.s.spin}次全局变异开始。")
+        # The whole persisted pool participates, not only this spin's board.
+        # Snapshot the instances so each one mutates at most once even if its
+        # new identity happens to have mutation-capable mechanics.
+        for instance in list(self.s.ingredients):
+            if self._mutation_eligible(instance):
                 self._mutate_instance(instance)
 
     def _rapid_delete_one(self) -> bool:
@@ -1815,7 +1822,6 @@ class GameEngine:
         old = inst.def_id
         inst.def_id = into
         inst.age = 0; inst.counter = 0; inst.flags = {}
-        inst.mutation_draw_count = 0
         self._apply_generation_bonus_to_instance(inst)
         self.emit("transformed")
         try:
@@ -2053,7 +2059,10 @@ class GameEngine:
         self.s.stats["last_completed_order_amount"] = amount
         self.emit("order_completed", value=amount)
         if self.s.fun_mode == "minimal":
-            self._gain_token("remove", 1, "极简模式订单奖励")
+            successful = int(self.s.stats.get("minimal_successful_orders", 0)) + 1
+            self.s.stats["minimal_successful_orders"] = successful
+            if successful % 2 == 0:
+                self._gain_token("remove", 1, "极简模式每两单奖励")
         for item_id in list(self.s.items):
             savings = self.catalog.items[item_id].get("order_savings")
             if savings:
@@ -2643,7 +2652,6 @@ class GameEngine:
                 "age": instance.age,
                 "counter": instance.counter,
                 "stored_gold": instance.stored_gold,
-                "mutation_draw_count": instance.mutation_draw_count,
                 "flags": dict(instance.flags),
                 "definition": self._definition_view("ingredient", instance.def_id),
             }
