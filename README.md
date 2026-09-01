@@ -47,39 +47,7 @@ py -3 game.py agent status --save .saves/agent.json
 
 协议细节见 [`docs/AGENT_INTERFACE.md`](docs/AGENT_INTERFACE.md)。
 
-## 批量模拟
 
-默认运行 1000 局，并生成 Markdown 与 JSON 报告：
-
-```powershell
-py -3 game.py simulate --games 1000 --seed 42 --difficulty 1
-```
-
-可切换 `heuristic-v1` / `heuristic-v2` / `heuristic-v3` / `heuristic-v3.1`，并用 `--summary-only` 进行大规模扫描。v3 和 v3.1 是控池策略，v2 保持为 A/B 基线；v3.1 在18张前基本沿用v2，并对生成型成分使用分级惩罚：
-
-```powershell
-py -3 game.py simulate `
-  --games 5000 `
-  --seed 42 `
-  --difficulty 10 `
-  --strategy heuristic-v2 `
-  --summary-only `
-  --report reports/difficulty10.md `
-  --json-report reports/difficulty10.json
-```
-
-按难度批量扫描：
-
-```powershell
-py -3 game.py simulate-sweep `
-  --seed 424242 `
-  --games-low 1000 `
-  --games-high 500 `
-  --report reports/balance_sweep.md `
-  --json-report reports/balance_sweep.json
-```
-
-模拟策略只用于分析，不会改变游戏规则或正常存档流程。
 
 ## 内容规模
 
