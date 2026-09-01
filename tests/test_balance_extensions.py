@@ -61,25 +61,24 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertEqual(1, int(ordinary.catalog.ingredients[low.def_id]["rarity"]))
         self.assertGreaterEqual(int(ordinary.catalog.ingredients[high.def_id]["rarity"]), 2)
 
-    def test_vein_periodic_spawn_uses_normal_and_high_quality_paths(self) -> None:
-        self.assertEqual(
-            0.50,
-            self.fresh().catalog.ingredients["vein"]["periodic_spawn"]["minimum_rarity_chance"]["chance"],
-        )
-        for random_value, minimum in ((0.99, 1), (0.0, 2)):
-            engine = self.fresh()
-            vein = engine.add_ingredient("vein", emit=False)
-            vein.counter = 5
-            engine._board = [vein]
-            engine._coords = [(0, 0)]
-            engine._values = [0]
-            engine.r.random = lambda value=random_value: value
-            engine._run_active_effects()
-            generated = [x for x in engine.s.ingredients if x.uid != vein.uid]
-            self.assertEqual(1, len(generated))
-            self.assertGreaterEqual(int(engine.catalog.ingredients[generated[0].def_id]["rarity"]), minimum)
-            self.assertEqual(1, vein.permanent_bonus)
-            self.assertEqual(0, vein.counter)
+    def test_vein_periodic_spawn_is_every_eight_and_always_at_least_two(self) -> None:
+        periodic = self.fresh().catalog.ingredients["vein"]["periodic_spawn"]
+        self.assertEqual(8, periodic["every"])
+        self.assertEqual(2, periodic["minimum_rarity"])
+        self.assertNotIn("minimum_rarity_chance", periodic)
+        engine = self.fresh()
+        vein = engine.add_ingredient("vein", emit=False)
+        vein.counter = 8
+        engine._board = [vein]
+        engine._coords = [(0, 0)]
+        engine._values = [0]
+        engine.r.random = lambda: 0.99
+        engine._run_active_effects()
+        generated = [x for x in engine.s.ingredients if x.uid != vein.uid]
+        self.assertEqual(1, len(generated))
+        self.assertGreaterEqual(int(engine.catalog.ingredients[generated[0].def_id]["rarity"]), 2)
+        self.assertEqual(1, vein.permanent_bonus)
+        self.assertEqual(0, vein.counter)
 
     def _run_summon_attempt(self, engine: GameEngine, success: bool) -> None:
         engine._chance = lambda _chance, result=success: result
@@ -105,7 +104,9 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertGreaterEqual(int(engine.catalog.ingredients[fourth.def_id]["rarity"]), 2)
         self.assertEqual(0, engine.s.stats["spawn_counters"]["summon_magic"])
         self._run_summon_attempt(engine, True)
-        self.assertEqual(1, int(engine.catalog.ingredients[engine.s.ingredients[-1].def_id]["rarity"]))
+        # After the guaranteed fourth success, normal summons use the full
+        # rarity table again; they are no longer forced to rarity 1.
+        self.assertIn(int(engine.catalog.ingredients[engine.s.ingredients[-1].def_id]["rarity"]), {1, 2, 3, 4})
         self.assertEqual(1, engine.s.stats["spawn_counters"]["summon_magic"])
 
     def test_summon_failure_does_not_advance_counter(self) -> None:
@@ -137,7 +138,7 @@ class BalanceExtensionTests(unittest.TestCase):
         )
         self.assertEqual(3.0, catalog.items["golden_lucky_core"]["rarity_multiplier"])
         self.assertEqual(1.15, catalog.items["lucky_charm"]["rarity_multiplier"])
-        self.assertEqual(1.25, catalog.items["lucky_compass"]["candidate_rarity_weight"])
+        self.assertEqual(1.30, catalog.items["lucky_compass"]["candidate_rarity_weight"])
         self.assertEqual(4, catalog.items["double_ledger"]["rarity"])
         self.assertEqual(3, catalog.items["tool_belt"]["rarity"])
         self.assertEqual(4, catalog.items["reagent_rack"]["rarity"])
@@ -151,11 +152,11 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertIn("4g", catalog.items["spare_key"]["description"])
         self.assertEqual(4, catalog.items["small_safe"]["event_bonus"]["token"])
         self.assertIn("4g", catalog.items["small_safe"]["description"])
-        self.assertEqual(2, catalog.ingredients["magic_magic"]["base"])
+        self.assertEqual(3, catalog.ingredients["magic_magic"]["base"])
         self.assertEqual(2, catalog.ingredients["proliferation_core"]["base"])
         self.assertEqual(11, catalog.ingredients["mercenary"]["reward_gold"])
-        self.assertEqual(20, catalog.ingredients["nested_chest"]["on_removed"]["gold"])
-        self.assertIn("20g", catalog.ingredients["nested_chest"]["description"])
+        self.assertEqual(10, catalog.ingredients["nested_chest"]["on_removed"]["gold"])
+        self.assertIn("10g", catalog.ingredients["nested_chest"]["description"])
         self.assertEqual(7, catalog.items["animal_registry"].get("first_animal_gold", 7))
         self.assertEqual(8, catalog.items["impossible_container"].get("per_spin_cap", 8))
         self.assertEqual([1, 1, 2, 2], catalog.items["large_reactor"]["on_acquire"]["fixed_ingredient_choices"])
@@ -226,12 +227,12 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertEqual(11, engine.s.gold)
         self.assertNotIn(monster.uid, {item.uid for item in engine.s.ingredients})
 
-    def test_nested_chest_pays_twenty_when_removed(self) -> None:
+    def test_nested_chest_pays_ten_when_removed(self) -> None:
         engine = self.fresh()
         chest = engine.add_ingredient("nested_chest", emit=False)
         self.assertIsNotNone(chest)
         self.assertTrue(engine._remove(chest, "removed", None))
-        self.assertEqual(20, engine.s.gold)
+        self.assertEqual(10, engine.s.gold)
 
     def test_spare_key_pays_four_for_each_opened_chest(self) -> None:
         engine = self.fresh()

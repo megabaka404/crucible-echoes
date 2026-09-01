@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .catalog import Catalog
-from .engine import GameEngine, GameError
+from .engine import FUN_MODES, GameEngine, GameError
 from .save import load_game, save_game
 from .simulation import run_batch, run_difficulty_sweep, strategy_from_name, write_report, write_sweep_report
 
@@ -28,7 +28,7 @@ def _safe_stdout(text: str, end: str = "") -> None:
             sys.stdout.write(payload.encode("ascii", errors="replace").decode("ascii"))
 
 COMMAND_HELP = """可用命令：
-  new --seed N --difficulty 1..15   新开一局
+  new --seed N --difficulty 1..15 [--fun-mode MODE]   新开一局
   start                              进入交互模式（自动读取存档）
   status                             查看订单、金币、最近盘面和待选奖励
   spin                               旋转并结算
@@ -38,9 +38,16 @@ COMMAND_HELP = """可用命令：
   remove N                           消耗1个删除Token移除库存第N个成分
   inventory                          查看成分、道具、精粹和Token
   use ITEM_ID                        使用主动道具
+  toggle ITEM_ID                     开关可切换道具（如禁令）
   simulate --games N                 批量模拟并生成平衡报告（可选--strategy heuristic-v1/v2/v3/v3.1）
   help                               显示本帮助
   quit                               退出交互模式
+
+娱乐模式：none（默认）、giant（40格/目标×2/成分与删除Token翻倍）、
+rapid（每回合自动删1个成分/两次普通成分奖励/Roll Token翻倍）、
+blind_box（成分身份随机化/第4单起主线目标×0.8/Roll转Delete或Essence）、
+minimal（12格/按稀有度加值/永久成长翻倍/每单+1删除Token）、
+mutation（成分抽到5次后变异，1%升级稀有度）。
 """
 
 
@@ -51,11 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     new = sub.add_parser("new", help="新开一局")
     new.add_argument("--seed", type=int, default=1)
     new.add_argument("--difficulty", type=int, default=1)
+    new.add_argument("--fun-mode", choices=FUN_MODES, default="none")
     new.add_argument("--save", default=str(DEFAULT_SAVE))
 
     start = sub.add_parser("start", help="进入交互模式")
     start.add_argument("--seed", type=int, default=1)
     start.add_argument("--difficulty", type=int, default=1)
+    start.add_argument("--fun-mode", choices=FUN_MODES, default="none")
     start.add_argument("--save", default=str(DEFAULT_SAVE))
 
     for name in ("status", "spin", "skip", "reroll", "inventory", "help"):
@@ -70,11 +79,15 @@ def build_parser() -> argparse.ArgumentParser:
     use = sub.add_parser("use")
     use.add_argument("item_id")
     use.add_argument("--save", default=str(DEFAULT_SAVE))
+    toggle = sub.add_parser("toggle")
+    toggle.add_argument("item_id")
+    toggle.add_argument("--save", default=str(DEFAULT_SAVE))
 
     simulate = sub.add_parser("simulate", help="批量模拟并生成平衡报告")
     simulate.add_argument("--games", type=int, default=1000, help="模拟局数，默认1000")
     simulate.add_argument("--seed", type=int, default=1, help="批量基础seed")
     simulate.add_argument("--difficulty", type=int, default=1)
+    simulate.add_argument("--fun-mode", choices=FUN_MODES, default="none")
     simulate.add_argument("--strategy", choices=("heuristic-v1", "heuristic-v2", "heuristic-v3", "heuristic-v3.1"), default="heuristic-v1")
     simulate.add_argument("--max-actions", type=int, default=5000, help="单局动作上限")
     simulate.add_argument("--report", default="reports/balance_report.md", help="Markdown报告路径")
@@ -86,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--games-low", type=int, default=1000, help="难度1-5每档局数")
     sweep.add_argument("--games-high", type=int, default=500, help="难度6-15每档局数")
     sweep.add_argument("--strategy", choices=("heuristic-v1", "heuristic-v2", "heuristic-v3", "heuristic-v3.1"), default="heuristic-v1")
+    sweep.add_argument("--fun-mode", choices=FUN_MODES, default="none")
     sweep.add_argument("--max-actions", type=int, default=5000, help="单局动作上限")
     sweep.add_argument("--report", default="reports/balance_sweep.md", help="汇总Markdown报告")
     sweep.add_argument("--json-report", default="reports/balance_sweep.json", help="汇总JSON报告")
@@ -100,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_new = agent_sub.add_parser("new", help="创建新存档")
     agent_new.add_argument("--seed", type=int, default=1)
     agent_new.add_argument("--difficulty", type=int, default=1)
+    agent_new.add_argument("--fun-mode", choices=FUN_MODES, default="none")
     agent_new.add_argument("--save", default=str(DEFAULT_SAVE))
     for name in ("status", "spin", "skip", "reroll", "inventory", "help"):
         child = agent_sub.add_parser(name)
@@ -113,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
     agent_use = agent_sub.add_parser("use")
     agent_use.add_argument("item_id")
     agent_use.add_argument("--save", default=str(DEFAULT_SAVE))
+    agent_toggle = agent_sub.add_parser("toggle")
+    agent_toggle.add_argument("item_id")
+    agent_toggle.add_argument("--save", default=str(DEFAULT_SAVE))
     return parser
 
 
@@ -133,9 +151,14 @@ def render(engine: GameEngine, *, inventory: bool = False) -> str:
     if payload.get("peace_mode"):
         lines.append(f"和平模式：第{payload['peace_order'] + 1}份和平订单 / 目标0g / 剩余{payload['spins_left']}回合 / 目标存款{payload['peace_target']}g")
     lines.append(f"状态：{payload['status']}  金币：{payload['gold']}g  难度：{payload['difficulty']}")
+    lines.append(f"娱乐模式：{payload.get('fun_mode', 'none')}")
     lines.append(f"订单：第{payload['order']}份 / {amount}g  剩余旋转：{payload['spins_left']}")
     lines.append(f"实验池：{payload['pool_size']}个成分  盘面容量：{payload['board_capacity']}格  seed：{payload['seed']}")
     lines.append(f"Token：Roll {state.tokens.get('roll',0)} / 删除 {state.tokens.get('remove',0)} / 精粹 {state.tokens.get('essence',0)}")
+    if "ban" in state.items:
+        mode = "开启" if payload.get("ingredient_generation_disabled") else "关闭"
+        suffix = "（永久禁用已生效）" if payload.get("ingredient_generation_permanently_disabled") else ""
+        lines.append(f"禁令：{mode}{suffix}（toggle ban 切换）")
     if state.last_board:
         board = "  ".join(
             f"{row['slot']}:{row['name']}{'' if row.get('present', True) else '[gone]'}({row['value']:+d}g)"
@@ -155,7 +178,14 @@ def render(engine: GameEngine, *, inventory: bool = False) -> str:
         )
         lines.append(f"待选 {choice.kind}（来源：{choice.source}）：")
         for index, def_id in enumerate(choice.offers, 1):
-            row = engine._definition_view(choice.kind, def_id) if choice.kind == "run_end" else collection[def_id]
+            if choice.kind in {"run_end", "bundle"}:
+                row = (
+                    engine._definition_view(choice.kind, def_id)
+                    if choice.kind == "run_end"
+                    else choice.details.get("options", {}).get(def_id, {})
+                )
+            else:
+                row = collection[def_id]
             rarity = f"{row.get('rarity')}级 " if row.get("rarity") else ""
             lines.append(f"  {index}. {row['name']} [{def_id}] — {rarity}{row.get('description','')}")
         lines.append("  可用：choose N" + (" / skip" if choice.can_skip else ""))
@@ -163,7 +193,8 @@ def render(engine: GameEngine, *, inventory: bool = False) -> str:
         lines.append("成分库存：")
         for index, inst in enumerate(state.ingredients, 1):
             row = engine.catalog.ingredients[inst.def_id]
-            lines.append(f"  {index}. {row['name']} [{inst.def_id}] {row.get('rarity',0)}级 基础{row.get('base',0):+d} 永久{inst.permanent_bonus:+d} 年龄{inst.age}")
+            mutation = f" 变异抽取{inst.mutation_draw_count}" if state.fun_mode == "mutation" else ""
+            lines.append(f"  {index}. {row['name']} [{inst.def_id}] {row.get('rarity',0)}级 基础{row.get('base',0):+d} 永久{inst.permanent_bonus:+d} 年龄{inst.age}{mutation}")
         lines.append("道具：")
         lines.extend(f"  - {engine.catalog.items[x]['name']} [{x}]：{engine.catalog.items[x]['description']}" for x in state.items)
         if not state.items: lines.append("  （无）")
@@ -184,6 +215,7 @@ def execute(engine: GameEngine, command: str, args: list[str]) -> str:
     elif command == "reroll": engine.reroll()
     elif command == "remove": engine.remove(int(args[0]))
     elif command == "use": engine.use_item(args[0])
+    elif command == "toggle": engine.toggle_item(args[0])
     else: raise GameError(f"未知命令：{command}")
     return render(engine, inventory=command == "remove")
 
@@ -202,6 +234,8 @@ def apply_action(engine: GameEngine, command: str, args: list[str]) -> None:
         engine.remove(int(args[0]))
     elif command == "use":
         engine.use_item(args[0])
+    elif command == "toggle":
+        engine.toggle_item(args[0])
     else:
         raise GameError(f"未知命令：{command}")
 
@@ -221,7 +255,7 @@ def run_agent(ns: argparse.Namespace) -> int:
     try:
         if action == "new":
             engine = GameEngine()
-            engine.new_game(ns.seed, ns.difficulty)
+            engine.new_game(ns.seed, ns.difficulty, ns.fun_mode)
             save_game(engine.s, save_path)
             print_agent_state(engine.agent_payload(action))
             return 0
@@ -234,7 +268,8 @@ def run_agent(ns: argparse.Namespace) -> int:
             payload = engine.agent_payload(action)
             payload["agent_help"] = {
                 "command": "python game.py agent ACTION --save PATH",
-                "actions": ["new", "status", "spin", "choose N", "skip", "reroll", "remove N", "inventory", "use ITEM_ID"],
+            "actions": ["new", "status", "spin", "choose N", "skip", "reroll", "remove N", "inventory", "use ITEM_ID", "toggle ITEM_ID"],
+                "fun_modes": list(FUN_MODES),
                 "contract": "每次进程只执行一个动作；成功或失败都输出一行 [STATE] JSON。",
             }
             print_agent_state(payload)
@@ -244,7 +279,7 @@ def run_agent(ns: argparse.Namespace) -> int:
             args: list[str] = []
             if action in {"choose", "remove"}:
                 args = [str(ns.number)]
-            elif action == "use":
+            elif action in {"use", "toggle"}:
                 args = [ns.item_id]
             apply_action(engine, action, args)
             save_game(engine.s, save_path)
@@ -288,6 +323,7 @@ def run_simulation_command(ns: argparse.Namespace) -> int:
         strategy=strategy_from_name(ns.strategy),
         max_actions=ns.max_actions,
         retain_details=not ns.summary_only,
+        fun_mode=ns.fun_mode,
     )
     write_report(report, ns.report, ns.json_report)
     _safe_stdout(report.to_markdown())
@@ -310,6 +346,7 @@ def run_simulation_sweep_command(ns: argparse.Namespace) -> int:
         strategy=strategy_from_name(ns.strategy),
         max_actions=ns.max_actions,
         retain_details=not ns.summary_only,
+        fun_mode=ns.fun_mode,
     )
     write_sweep_report(report, ns.report, ns.json_report, ns.detail_directory)
     _safe_stdout(report.to_markdown())
@@ -317,12 +354,12 @@ def run_simulation_sweep_command(ns: argparse.Namespace) -> int:
     return 0
 
 
-def interactive(save_path: Path, seed: int, difficulty: int) -> int:
+def interactive(save_path: Path, seed: int, difficulty: int, fun_mode: str = "none") -> int:
     if save_path.exists():
         engine = load_engine(save_path)
         print("已读取存档。")
     else:
-        engine = GameEngine(); engine.new_game(seed, difficulty); save_game(engine.s, save_path)
+        engine = GameEngine(); engine.new_game(seed, difficulty, fun_mode); save_game(engine.s, save_path)
         print("已创建新实验。")
     print(render(engine)); print(COMMAND_HELP)
     while True:
@@ -356,14 +393,14 @@ def main(argv: list[str] | None = None) -> int:
         if command == "simulate-sweep":
             return run_simulation_sweep_command(ns)
         if command == "new":
-            engine = GameEngine(); engine.new_game(ns.seed, ns.difficulty); save_game(engine.s, save_path)
+            engine = GameEngine(); engine.new_game(ns.seed, ns.difficulty, ns.fun_mode); save_game(engine.s, save_path)
             print(render(engine)); return 0
-        if command == "start": return interactive(save_path, getattr(ns, "seed", 1), getattr(ns, "difficulty", 1))
+        if command == "start": return interactive(save_path, getattr(ns, "seed", 1), getattr(ns, "difficulty", 1), getattr(ns, "fun_mode", "none"))
         if command == "help": print(COMMAND_HELP); return 0
         engine = load_engine(save_path)
         args: list[str] = []
         if command in {"choose", "remove"}: args = [str(ns.number)]
-        elif command == "use": args = [ns.item_id]
+        elif command in {"use", "toggle"}: args = [ns.item_id]
         print(execute(engine, command, args))
         save_game(engine.s, save_path)
         return 0

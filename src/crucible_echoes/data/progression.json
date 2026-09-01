@@ -1,6 +1,7 @@
 {
   "initial_ingredients": ["water", "charcoal", "cauldron", "kitten", "test_tube"],
   "starting_gold": 1,
+  "pigment_required_colors": ["red", "yellow", "blue"],
   "ingredient_rarity": {
     "0": [100.0, 0.0, 0.0, 0.0],
     "1": [88.0, 12.0, 0.0, 0.0],
@@ -39,9 +40,9 @@
     "4": {"token_reward": {"remove": 1, "roll": 1}},
     "5": {"initial_slag": 1},
     "6": {"order_bonus": {"10": 25}, "initial_slag": 2},
-    "7": {"order_bonus": {"11": 25}, "slag_interval": 15},
-    "8": {"initial_slag": 3, "slag_interval": 15},
-    "9": {"order_bonus": {"9": 25}, "slag_interval": 15},
+    "7": {"order_bonus": {"11": 25}, "slag_interval": 20},
+    "8": {"initial_slag": 3, "slag_interval": 20},
+    "9": {"order_bonus": {"9": 25}, "slag_interval": 20},
     "10": {"token_reward": {"essence": 1}, "final_order": {"after_completed": 12, "amount": 1350, "spins": 15}},
     "11": {"final_order": {"after_completed": 12, "amount": 1425, "spins": 15}},
     "12": {"ingredient_overrides": {"slag": {"force_value": 0, "remove_after_bonus": 2}}},

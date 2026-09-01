@@ -193,6 +193,11 @@ class HeuristicStrategy(SimulationStrategy):
         if isinstance(each_spin, dict):
             amount = max(1.0, float(each_spin.get("amount", 1)))
             expected += horizon * amount
+        if row.get("ingredient_generation") and expected <= 0.0:
+            # Scripted component generators declare their ownership in data;
+            # use a conservative one-entry baseline when no target cadence is
+            # expressible in JSON.
+            expected = 1.0
         return min(20.0, expected)
 
     def _generated_tags(self, engine: GameEngine, row: dict[str, Any]) -> set[str]:
@@ -1057,6 +1062,8 @@ class HeuristicV31Strategy(HeuristicV3Strategy):
         if row.get("periodic_spawn"):
             expected = self._generation_profile(row)
             return ("recursive" if recursive else "periodic", 2.8 if recursive else 2.4, expected)
+        if row.get("ingredient_generation"):
+            return ("continuous", 2.7, self._generation_profile(row))
         for field in self._ONE_TIME_GENERATOR_FIELDS:
             spec = row.get(field)
             if spec:
@@ -1273,12 +1280,16 @@ def validate_simulation_state(engine: GameEngine) -> list[str]:
         errors.append("gold<0")
     if not 1 <= state.difficulty <= 15:
         errors.append("difficulty_out_of_range")
+    if state.fun_mode not in {"none", "giant", "rapid", "blind_box", "minimal", "mutation"}:
+        errors.append("fun_mode_invalid")
     if state.order_index < 0 or (not state.endless_mode and state.order_index > 13):
         errors.append("order_index_out_of_range")
     if state.spins_left < 0:
         errors.append("spins_left<0")
     if any(int(value) < 0 for value in state.tokens.values()):
         errors.append("token<0")
+    if any(int(instance.mutation_draw_count) < 0 for instance in state.ingredients):
+        errors.append("mutation_draw_count<0")
     uids = [instance.uid for instance in state.ingredients]
     if len(uids) != len(set(uids)):
         errors.append("duplicate_ingredient_uid")
@@ -1292,6 +1303,8 @@ def validate_simulation_state(engine: GameEngine) -> list[str]:
             if choice.kind == "essence"
             else {def_id: engine._definition_view("run_end", def_id) for def_id in choice.offers}
         )
+        if choice.kind == "bundle":
+            collection = choice.details.get("options", {})
         if any(def_id not in collection for def_id in choice.offers):
             errors.append("pending_offer_missing_definition")
     return errors
@@ -1342,7 +1355,8 @@ def _final_attributes(engine: GameEngine, max_pool_size: int | None = None) -> d
         "spins_left": state.spins_left,
         "pool_size": len(state.ingredients),
         "max_pool_size": max_pool_size if max_pool_size is not None else len(state.ingredients),
-        "board_capacity": 21 if state.expanded else 20,
+        "board_capacity": engine.board_capacity(),
+        "fun_mode": state.fun_mode,
         "tokens": dict(state.tokens),
         "rarity_multiplier": engine.current_rarity_multiplier(),
         "expanded": state.expanded,
@@ -1370,11 +1384,12 @@ def simulate_game(
     on_spin: Callable[[GameEngine], None] | None = None,
     on_start: Callable[[GameEngine], None] | None = None,
     catalog: Catalog | None = None,
+    fun_mode: str = "none",
 ) -> GameRecord:
     """Run one complete game through the real engine and return its telemetry."""
     policy = strategy or HeuristicStrategy()
     engine = GameEngine(catalog)
-    engine.new_game(seed, difficulty)
+    engine.new_game(seed, difficulty, fun_mode)
     if on_start:
         on_start(engine)
     selected: dict[str, set[str]] = {
@@ -1576,6 +1591,37 @@ def simulate_game(
                     if on_choice:
                         on_choice(engine, choice, "end_run")
                     action_count += 1
+                    continue
+                if choice.kind == "bundle":
+                    # Bundle choices are intentionally all-or-nothing. The
+                    # simulator accepts the first declared option so this
+                    # special choice remains deterministic and single-step.
+                    before_choice_uids = {instance.uid: instance.def_id for instance in engine.s.ingredients}
+                    selected_id = choice.offers[0] if choice.offers else None
+                    if selected_id is None:
+                        raise GameError("组合选择没有可用选项")
+                    engine.choose(1)
+                    record_pool_delta(
+                        before_choice_uids,
+                        "active_choice",
+                        "choose:bundle",
+                        growth_source="item_generation",
+                    )
+                    capture_acquisitions()
+                    strategy_events["choices"].append({
+                        "kind": choice.kind,
+                        "offers": {option_id: {"score": 0.0, "components": {}} for option_id in choice.offers},
+                        "selected": selected_id,
+                        "pool_size": len(engine.s.ingredients),
+                        "pool_size_before": len(before_choice_uids),
+                        "build_state": build_state(),
+                    })
+                    action_count += 1
+                    violations = validate_simulation_state(engine)
+                    if violations:
+                        error = "state_invariant:" + ",".join(violations)
+                        status = "aborted"
+                        break
                     continue
                 if policy.should_reroll(engine, choice):
                     before_scores = [policy.score(engine, choice.kind, def_id) for def_id in choice.offers]
@@ -2137,7 +2183,7 @@ class BatchAccumulator:
                 ):
                     row["suspected_balance"] = "possibly_underpowered"
 
-    def build(self, *, base_seed: int, difficulty: int, strategy_name: str) -> "SimulationReport":
+    def build(self, *, base_seed: int, difficulty: int, strategy_name: str, fun_mode: str = "none") -> "SimulationReport":
         wins = sum(record.won for record in self.records)
         losses = sum(record.status == "lost" for record in self.records)
         aborted = sum(record.status == "aborted" for record in self.records)
@@ -2222,6 +2268,7 @@ class BatchAccumulator:
 
         summary = {
             "games_requested": self.games,
+            "fun_mode": fun_mode,
             "games_recorded": len(self.records),
             "wins": wins,
             "losses": losses,
@@ -2297,6 +2344,7 @@ class BatchAccumulator:
                 "相关性指标不是因果证明；选择策略会影响选择率和持有时通关率。",
                 f"疑似强弱标记要求至少观察到 {max(10, self.games // 50)} 次候选出现。",
             ],
+            fun_mode=fun_mode,
         )
 
 
@@ -2313,6 +2361,7 @@ class SimulationReport:
     anomalies: list[dict[str, Any]]
     games_detail: list[dict[str, Any]]
     notes: list[str]
+    fun_mode: str = "none"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2322,6 +2371,7 @@ class SimulationReport:
                 "difficulty": self.difficulty,
                 "games": self.games,
                 "strategy": self.strategy,
+                "fun_mode": self.fun_mode,
             },
             "summary": self.summary,
             "death_layers": self.death_layers,
@@ -2387,6 +2437,7 @@ class SimulationReport:
             f"- 基础 seed：`{self.base_seed}`（第 i 局使用可复现派生 seed）",
             f"- 难度：{self.difficulty}",
             f"- 策略：`{self.strategy}`",
+            f"- 娱乐模式：`{self.fun_mode}`",
             "",
             "## 总览",
             "",
@@ -2517,6 +2568,7 @@ class DifficultySweepReport:
     reports: dict[int, SimulationReport]
     adjacent_jumps: list[dict[str, Any]]
     notes: list[str]
+    fun_mode: str = "none"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2525,6 +2577,7 @@ class DifficultySweepReport:
                 "base_seed": self.base_seed,
                 "games_by_difficulty": {str(k): v for k, v in self.games_by_difficulty.items()},
                 "strategy": self.strategy,
+                "fun_mode": self.fun_mode,
             },
             "win_rate_curve": [
                 {
@@ -2571,6 +2624,7 @@ class DifficultySweepReport:
             "",
             f"- 固定 base seed：`{self.base_seed}`",
             f"- 策略：`{self.strategy}`",
+            f"- 娱乐模式：`{self.fun_mode}`",
             "- 同一 base seed 在不同难度下使用相同的逐局 seed 派生方式，便于横向对照。",
             "",
             "## 难度 1–10 通关率曲线",
@@ -2642,6 +2696,7 @@ def run_batch(
     max_actions: int = 5000,
     catalog: Catalog | None = None,
     retain_details: bool = True,
+    fun_mode: str = "none",
 ) -> SimulationReport:
     if games < 1:
         raise ValueError("模拟局数必须至少为1")
@@ -2661,9 +2716,10 @@ def run_batch(
             on_choice=accumulator.observe_choice,
             on_spin=accumulator.observe_spin,
             catalog=active_catalog,
+            fun_mode=fun_mode,
         )
         accumulator.observe_record(record)
-    return accumulator.build(base_seed=seed, difficulty=difficulty, strategy_name=policy.name)
+    return accumulator.build(base_seed=seed, difficulty=difficulty, strategy_name=policy.name, fun_mode=fun_mode)
 
 
 def run_difficulty_sweep(
@@ -2674,6 +2730,7 @@ def run_difficulty_sweep(
     max_actions: int = 5000,
     catalog: Catalog | None = None,
     retain_details: bool = True,
+    fun_mode: str = "none",
 ) -> DifficultySweepReport:
     if not games_by_difficulty:
         raise ValueError("至少需要一个难度")
@@ -2692,6 +2749,7 @@ def run_difficulty_sweep(
             max_actions=max_actions,
             retain_details=retain_details,
             catalog=catalog,
+            fun_mode=fun_mode,
         )
     adjacent_jumps: list[dict[str, Any]] = []
     difficulties = sorted(reports)
@@ -2717,6 +2775,7 @@ def run_difficulty_sweep(
             "相邻难度跳变使用绝对通关率变化达到10个百分点作为预警线，不代表因果结论。",
             "强弱名单应排除触发样本不足的内容，并单独标记幸存者偏差、选择偏差和构筑偏差。",
         ],
+        fun_mode=fun_mode,
     )
 
 

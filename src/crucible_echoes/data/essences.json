@@ -47,6 +47,7 @@
   {"id":"orange_reagent_essence","item_id":"orange_reagent","name":"橙色试剂精粹","description":"本轮存在0g成分时获得25g。","trigger":{"board_base_zero":1},"effect":{"gold":25}},
 
   {"id":"magic_notes_essence","item_id":"magic_notes","name":"魔法笔记精粹","description":"场上有4个魔法时，使所有魔法永久+2g。","trigger":{"board_tag_count":{"tag":"magic","count":4}},"effect":{"permanent_bonus":{"tag":"magic","amount":2}}},
+  {"id":"palette_essence","item_id":"palette","name":"调色板精粹","description":"首次出现两个同色颜料相邻时，使该颜色所有颜料永久+2g。","trigger":{"next_adjacent_same":{"tag":"pigment","field":"pigment_color"}},"effect":{"permanent_bonus":{"context_id":true,"persistent":true,"amount":2}}},
   {"id":"advanced_miner_lamp_essence","item_id":"advanced_miner_lamp","name":"高级矿工灯精粹","description":"场上有7个石头、矿或金属时，下一回合其价值×2。","trigger":{"board_filter_count":{"tags":["stone","ore","metal"],"count":7}},"effect":{"flag":{"mineral_multiplier_spins":1,"mineral_multiplier":2}}},
   {"id":"tool_belt_essence","item_id":"tool_belt","name":"工具腰带精粹","description":"场上有5个器材时，使所有器材永久+2g。","trigger":{"board_tag_count":{"tag":"equipment","count":5}},"effect":{"permanent_bonus":{"tag":"equipment","amount":2}}},
   {"id":"animal_feed_essence","item_id":"animal_feed","name":"动物饲料精粹","description":"场上有5个动物时，使所有动物永久+2g。","trigger":{"board_tag_count":{"tag":"animal","count":5}},"effect":{"permanent_bonus":{"tag":"animal","amount":2}}},
@@ -108,5 +109,6 @@
   {"id":"equivalent_exchange_essence","item_id":"equivalent_exchange","name":"等价交换法则精粹","description":"单回合移除至少4个成分时，把最高基础价值永久赋给随机成分。","trigger":{"event_count_round":{"event":"removed","count":4}},"effect":{"highest_removed_to_random":true}},
   {"id":"impossible_container_essence","item_id":"impossible_container","name":"不可能容器精粹","description":"成分池达到35时获得75g并随机移除5个1级成分。","trigger":{"pool_size":35},"effect":{"gold":75,"remove_random_rarity":{"rarity":1,"count":5}}},
   {"id":"monster_guide_essence","item_id":"monster_guide","name":"怪物指南精粹","description":"累计移除3个怪物：+30g，获得1个删除Token，然后消耗。","trigger":{"event_count":{"event":"removed_tag:monster","count":3}},"effect":{"gold":30,"tokens":{"remove":1}}},
-  {"id":"time_rift_essence","item_id":"time_rift","name":"时间裂缝精粹","description":"同回合触发4个周期效果时，使下一回合所有周期效果立即触发。","trigger":{"event_count_round":{"event":"periodic","count":4}},"effect":{"flag":{"force_periodic_next":true}}}
+  {"id":"time_rift_essence","item_id":"time_rift","name":"时间裂缝精粹","description":"同回合触发4个周期效果时，使下一回合所有周期效果立即触发。","trigger":{"event_count_round":{"event":"periodic","count":4}},"effect":{"flag":{"force_periodic_next":true}}},
+  {"id":"ban_essence","item_id":"ban","name":"禁令精粹","description":"累计成功生成3个成分后，永久停止所有成分生成，并使其永久+1g。","trigger":{"event_count":{"event":"generated","count":3},"immediate":true},"effect":{"disable_ingredient_generation":true,"generation_bonus":1}}
 ]

@@ -28,7 +28,16 @@ The JSON envelope contains:
   round-scoped essence triggers continue across stateless agent actions;
 - `state.stats.item_storage`: persisted balances such as the piggy-bank reserve
   (old saves receive an empty object automatically);
-- `available_actions`: executable command strings for the next step;
+- `state.flags.ingredient_generation_disabled` and
+  `state.flags.ingredient_generation_permanently_disabled`: effective and
+  permanent component-generation switches; `ingredient_generation_bonus`
+  reports the permanent value bonus applied to generator ingredients;
+- `state.fun_mode` identifies the mutually exclusive entertainment mode
+  (`none`, `giant`, `rapid`, `blind_box`, `minimal`, or `mutation`); every
+  ingredient instance also exposes its persisted `mutation_draw_count`;
+- `available_actions`: executable command strings for the next step; toggleable
+  items expose `toggle ITEM_ID`, and bundle rewards expose one `choose N`
+  action for the all-or-nothing option;
 - `available_action_specs`: the same actions in structured form;
 - `endless_mode`, `endless_order`, `endless_target`, `peace_mode`,
   `peace_order`, and `order_detail`: the current post-mainline mode and
@@ -43,13 +52,14 @@ Use one persistent save path for the whole run:
 
 ```text
 python game.py agent new --seed 42 --difficulty 1 --save .saves/agent.json
+python game.py agent new --seed 42 --difficulty 1 --fun-mode mutation --save .saves/agent-mutation.json
 python game.py agent spin --save .saves/agent.json
 python game.py agent choose 2 --save .saves/agent.json
 python game.py agent status --save .saves/agent.json
 ```
 
-Supported agent actions are `new`, `status`, `spin`, `choose N`, `skip`,
-`reroll`, `remove N`, `inventory`, `use ITEM_ID`, and `help`. Mutating actions
+Supported agent actions are `new` (with `--fun-mode none|giant|rapid|blind_box|minimal|mutation`), `status`, `spin`, `choose N`, `skip`,
+`reroll`, `remove N`, `inventory`, `use ITEM_ID`, `toggle ITEM_ID`, and `help`. Mutating actions
 load the save, execute one engine action, save the resulting state, and exit.
 Read-only actions also emit the same state envelope.
 

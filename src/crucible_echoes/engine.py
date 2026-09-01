@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from typing import Any, Iterable
 
 from .catalog import Catalog
-from .geometry import adjacent_indices, board_coords, is_corner, is_edge
+from .geometry import adjacent_indices, board_coords, is_corner, is_edge, orthogonal_indices
 from .model import GameState, IngredientInstance, PendingChoice
 from .rng import DeterministicRNG
 
@@ -34,6 +34,7 @@ RUN_END_OPTIONS = {
 }
 
 PEACE_MODE_TARGET = 1_000_000
+FUN_MODES = ("none", "giant", "rapid", "blind_box", "minimal", "mutation")
 
 
 class GameEngine:
@@ -51,14 +52,16 @@ class GameEngine:
         self._removed_values: list[tuple[int, int]] = []
         self._triggering_essences: set[str] = set()
 
-    def new_game(self, seed: int, difficulty: int = 1) -> GameState:
+    def new_game(self, seed: int, difficulty: int = 1, fun_mode: str = "none") -> GameState:
         if not 1 <= difficulty <= 15:
             raise GameError("难度必须在1到15之间")
+        if fun_mode not in FUN_MODES:
+            raise GameError(f"娱乐模式必须是：{', '.join(FUN_MODES)}")
         self.rng = DeterministicRNG(seed & ((1 << 64) - 1))
         self._round_events = defaultdict(int)
         self._round_event_values = defaultdict(int)
         self._removed_values = []
-        first = self.current_order_for(0, difficulty, {})
+        first = self.current_order_for(0, difficulty, {}, fun_mode=fun_mode)
         state = GameState(
             version=1,
             seed=seed,
@@ -90,19 +93,33 @@ class GameEngine:
                 "choice_minimum_count": 0,
                 "choice_minimum_rarity": 0,
                 "choice_minimum_reserved": 0,
+                "ingredient_generation_disabled": False,
+                "ingredient_generation_permanently_disabled": False,
+                "ingredient_generation_bonus": 0,
+                "global_permanent_bonuses": {},
             },
             endless_mode=False,
             endless_order=0,
             endless_target=0,
             peace_mode=False,
             peace_order=0,
+            fun_mode=fun_mode,
         )
         self.state = state
         for def_id in self.catalog.progression["initial_ingredients"]:
             self.add_ingredient(def_id, emit=False)
+        if fun_mode == "minimal":
+            # Minimal mode's opening trim is deliberately outside the normal
+            # remove pipeline: no on-remove rewards or listeners should fire
+            # before the first spin, but the deterministic RNG still records
+            # the choice in the saved rng_state.
+            initial = list(state.ingredients)
+            for instance in self.r.sample(initial, min(2, len(initial))):
+                state.ingredients = [x for x in state.ingredients if x.uid != instance.uid]
+            state.last_log.append("极简模式：开局随机裁剪2个初始成分。")
         for _ in range(self.initial_slag_count(difficulty)):
             self.add_ingredient("slag", emit=False)
-        state.last_log = [f"新实验开始：seed={seed}，难度={difficulty}。"]
+        state.last_log.insert(0, f"新实验开始：seed={seed}，难度={difficulty}，娱乐模式={fun_mode}。")
         self._sync_rng()
         return state
 
@@ -128,6 +145,12 @@ class GameEngine:
         self.s.flags.setdefault("choice_minimum_count", 0)
         self.s.flags.setdefault("choice_minimum_rarity", 0)
         self.s.flags.setdefault("choice_minimum_reserved", 0)
+        self.s.flags.setdefault("ingredient_generation_disabled", False)
+        self.s.flags.setdefault("ingredient_generation_permanently_disabled", False)
+        self.s.flags.setdefault("ingredient_generation_bonus", 0)
+        self.s.flags.setdefault("global_permanent_bonuses", {})
+        if getattr(self.s, "fun_mode", None) not in FUN_MODES:
+            self.s.fun_mode = "none"
         self.rng = DeterministicRNG(state.rng_state)
         # Round counters are persisted because the agent interface executes
         # one action per process. Without restoring them, two rerolls issued
@@ -167,10 +190,21 @@ class GameEngine:
     @staticmethod
     def slag_interval(difficulty: int) -> int | None:
         if difficulty >= 7:
-            return 15
+            return 20
         return None
 
-    def current_order_for(self, completed: int, difficulty: int, flags: dict[str, Any]) -> tuple[int, int]:
+    def current_order_for(
+        self,
+        completed: int,
+        difficulty: int,
+        flags: dict[str, Any],
+        *,
+        fun_mode: str | None = None,
+        endless: bool = False,
+        peace: bool = False,
+    ) -> tuple[int, int]:
+        if fun_mode is None:
+            fun_mode = getattr(self.state, "fun_mode", "none")
         rows = self.catalog.progression["orders"]
         if completed < len(rows):
             amount = int(rows[completed]["amount"])
@@ -191,7 +225,42 @@ class GameEngine:
             spins = int(final_order["spins"])
         if flags.get("next_order_penalty"):
             amount = int((amount * 1.25) + 0.9999)
+        amount = self.apply_fun_order_modifier(
+            amount,
+            number,
+            fun_mode=fun_mode,
+            endless=endless,
+            peace=peace,
+        )
         return amount, spins
+
+    @staticmethod
+    def apply_fun_order_modifier(
+        amount: int,
+        order_number: int,
+        *,
+        fun_mode: str = "none",
+        endless: bool = False,
+        peace: bool = False,
+    ) -> int:
+        """Apply entertainment-mode order changes after normal difficulty.
+
+        Peace orders are explicitly zero and endless orders are exempt from
+        blind-box's mainline discount.  Giant mode doubles every payable
+        target, including endless and difficulty-generated final orders.
+        """
+        resolved = max(0, int(amount))
+        if peace:
+            return 0
+        if fun_mode == "blind_box" and not endless and int(order_number) >= 4:
+            resolved = (resolved * 4 + 4) // 5  # ceil(resolved * 0.8)
+        if fun_mode == "giant":
+            resolved *= 2
+        return resolved
+
+    def board_capacity(self) -> int:
+        base = 40 if self.s.fun_mode == "giant" else 12 if self.s.fun_mode == "minimal" else 20
+        return base + (1 if self.s.expanded else 0)
 
     def _final_order_for(self, completed: int, difficulty: int) -> dict[str, Any] | None:
         """Return an active declarative extra-order rule, if any."""
@@ -223,8 +292,18 @@ class GameEngine:
         if self.s.peace_mode:
             return 0, 7
         if self.s.endless_mode:
-            return max(0, int(self.s.endless_target)), 10
-        return self.current_order_for(self.s.order_index, self.s.difficulty, self.s.flags)
+            return self.apply_fun_order_modifier(
+                int(self.s.endless_target),
+                int(self.s.endless_order),
+                fun_mode=self.s.fun_mode,
+                endless=True,
+            ), 10
+        return self.current_order_for(
+            self.s.order_index,
+            self.s.difficulty,
+            self.s.flags,
+            fun_mode=self.s.fun_mode,
+        )
 
     def difficulty_ingredient_override(self, def_id: str) -> dict[str, Any]:
         """Merge declarative difficulty overrides for one ingredient ID."""
@@ -306,6 +385,68 @@ class GameEngine:
 
     def negative_disabled(self) -> bool:
         return "holy_water" in self.s.items or any(x.def_id == "white_mage" for x in self.s.ingredients)
+
+    @staticmethod
+    def ingredient_has_generation(definition: dict[str, Any]) -> bool:
+        """Return whether a definition owns a component-generation effect.
+
+        Declarative spawn fields are recognised automatically.  Scripted
+        definitions opt in with ``ingredient_generation`` so the ban item and
+        its permanent essence can share one rule without scattering card IDs
+        through the engine.
+        """
+        if "ingredient_generation" in definition:
+            return bool(definition.get("ingredient_generation"))
+        if any(definition.get(field) for field in ("periodic_spawn", "chance_spawn", "spawn_each_spin")):
+            return True
+        on_removed = definition.get("on_removed")
+        if isinstance(on_removed, dict) and on_removed.get("spawn_tag"):
+            return True
+        potion = definition.get("potion")
+        return isinstance(potion, dict) and bool(potion.get("recycle"))
+
+    def ingredient_generation_disabled(self) -> bool:
+        """Whether component-owned generation is currently suppressed."""
+        return bool(
+            self.s.flags.get("ingredient_generation_disabled", False)
+            or self.s.flags.get("ingredient_generation_permanently_disabled", False)
+        )
+
+    def _generated_ingredient(self, def_id: str) -> IngredientInstance | None:
+        """Add one ingredient from a component-owned generation effect.
+
+        All such additions pass through this helper so the ban state and the
+        generated-event counter (including the ban essence) stay consistent.
+        """
+        if self.ingredient_generation_disabled():
+            return None
+        created = self.add_ingredient(def_id)
+        if created:
+            self.emit("generated")
+        return created
+
+    def _apply_generation_bonus_to_instance(self, instance: IngredientInstance) -> None:
+        """Materialize the permanent ban-essence bonus on one generator.
+
+        The global amount remains in flags for future definitions and save
+        inspection; the per-instance marker prevents the calculated value from
+        double-counting a bonus already materialized here.
+        """
+        if not self.s.flags.get("ingredient_generation_permanently_disabled"):
+            return
+        if not self.ingredient_has_generation(self.catalog.ingredients[instance.def_id]):
+            return
+        total = int(self.s.flags.get("ingredient_generation_bonus", 0))
+        applied = int(instance.flags.get("ingredient_generation_bonus_applied", 0))
+        if total > applied:
+            delta = total - applied
+            # The ban essence materialises its global +1g as a permanent
+            # value bonus on each generator.  Minimal mode doubles all such
+            # permanent growth at this single shared boundary as well.
+            if self.s.fun_mode == "minimal":
+                delta *= 2
+            instance.permanent_bonus += delta
+            instance.flags["ingredient_generation_bonus_applied"] = total
 
     def _potion_effect_multiplier(self) -> int:
         multiplier = 1
@@ -455,9 +596,45 @@ class GameEngine:
                 self._gain_gold(5, "概率校准器")
         self.s.stats["last_choice_rarities"] = rarities
 
-    def add_ingredient(self, def_id: str, *, emit: bool = True, permanent_bonus: int = 0) -> IngredientInstance | None:
+    def add_ingredient(
+        self,
+        def_id: str,
+        *,
+        emit: bool = True,
+        permanent_bonus: int = 0,
+        _mode_processed: bool = False,
+        _fun_mode_copy: bool = False,
+    ) -> IngredientInstance | None:
+        """Gain one ingredient through the shared entertainment-mode gateway.
+
+        Blind-box replacement happens once before the actual gain; giant mode
+        then creates exactly one non-recursive copy of the resolved identity.
+        Internal callers may pass ``_mode_processed`` only for that copy (or
+        other engine-level recursive mechanics), never for user-facing gains.
+        """
+        if not _mode_processed:
+            actual_id = def_id
+            if self.s.fun_mode == "blind_box":
+                actual_id = self._draw_definition(
+                    "ingredient", self.roll_rarity("ingredient")
+                )
+            created = self.add_ingredient(
+                actual_id,
+                emit=emit,
+                permanent_bonus=permanent_bonus,
+                _mode_processed=True,
+            )
+            if created is not None and self.s.fun_mode == "giant":
+                self.add_ingredient(
+                    actual_id,
+                    emit=emit,
+                    permanent_bonus=permanent_bonus,
+                    _mode_processed=True,
+                    _fun_mode_copy=True,
+                )
+            return created
         definition = self.catalog.ingredients[def_id]
-        if definition.get("unique") and def_id in self.s.acquired_once:
+        if definition.get("unique") and def_id in self.s.acquired_once and not _fun_mode_copy:
             return None
         if definition.get("on_acquire") == "expand_board":
             self.s.expanded = True
@@ -468,6 +645,7 @@ class GameEngine:
         instance = IngredientInstance(uid=self.s.next_uid, def_id=def_id, permanent_bonus=permanent_bonus)
         self.s.next_uid += 1
         self.s.ingredients.append(instance)
+        self._apply_generation_bonus_to_instance(instance)
         if definition.get("unique") and def_id not in self.s.acquired_once:
             self.s.acquired_once.append(def_id)
         if emit:
@@ -492,6 +670,10 @@ class GameEngine:
                     self.emit("new_animal")
         return instance
 
+    def gain_ingredient(self, def_id: str, *, emit: bool = True, permanent_bonus: int = 0) -> IngredientInstance | None:
+        """Explicit alias for the shared ingredient-gain entry point."""
+        return self.add_ingredient(def_id, emit=emit, permanent_bonus=permanent_bonus)
+
     def add_item(self, item_id: str) -> None:
         data = self.catalog.items[item_id]
         if item_id in self.s.items or (data.get("unique") and item_id in self.s.acquired_once):
@@ -508,6 +690,21 @@ class GameEngine:
         for spec in self._as_rule_list(acquire.get("tagged_ingredient_choices")):
             for _ in range(int(spec.get("count", 1))):
                 self.s.pending.append(self.make_choice("ingredient", source=item_id, tag_filter=spec.get("tag")))
+        bundle = acquire.get("bundle_choice")
+        if isinstance(bundle, dict):
+            options = bundle.get("options", {})
+            if isinstance(options, list):
+                options = {str(option["id"]): option for option in options if isinstance(option, dict) and option.get("id")}
+            if isinstance(options, dict) and options:
+                self.s.pending.append(
+                    PendingChoice(
+                        kind="bundle",
+                        offers=[str(option_id) for option_id in options],
+                        can_skip=False,
+                        source=item_id,
+                        details={"options": options},
+                    )
+                )
 
     def add_essence(self, essence_id: str) -> None:
         if essence_id in self.s.essences or essence_id in self.s.consumed_essences:
@@ -592,6 +789,27 @@ class GameEngine:
             elif script == "cat_observation_log" and event == "cat_bonus" and not self._round_events.get(round_key):
                 self._round_events[round_key] = 1
                 self._gain_gold(4, item["name"])
+        if event == "generated":
+            self._check_immediate_essences(event)
+
+    def _check_immediate_essences(self, event: str) -> None:
+        """Resolve explicitly immediate event-count essences.
+
+        Most essences retain the engine's normal end-of-action check.  The
+        ``immediate`` flag is a generic opt-in for effects (such as the ban
+        essence) that must take effect before a later generator in the same
+        action can run.
+        """
+        for essence_id in list(self.s.essences):
+            data = self.catalog.essences[essence_id]
+            trigger = data.get("trigger", {})
+            if not trigger.get("immediate"):
+                continue
+            event_spec = trigger.get("event_count", {})
+            if event_spec.get("event") != event:
+                continue
+            if self._trigger_ready(essence_id, trigger):
+                self._trigger_essence(essence_id, data)
 
     def _item_choice_rewards_for_event(self, event: str) -> list[PendingChoice]:
         """Build data-driven choice rewards for an event, without stacking duplicates."""
@@ -645,14 +863,26 @@ class GameEngine:
     def _neighbors(self, index: int) -> list[int]:
         if self._all_adjacent:
             return [i for i in range(len(self._board)) if i != index]
-        regular = set(adjacent_indices(self._coords, index))
+        # Existing normal-board semantics remain unchanged (the project has
+        # historically used eight-neighbour adjacency).  Fun boards opt into
+        # the explicitly requested orthogonal topology.
+        if self.s.fun_mode in {"giant", "minimal"}:
+            regular = set(orthogonal_indices(self._coords, index))
+        else:
+            regular = set(adjacent_indices(self._coords, index))
         if self._panorama:
-            corners = {i for i, coord in enumerate(self._coords) if is_corner(coord)}
+            corners = {i for i, coord in enumerate(self._coords) if self._is_corner(coord)}
             if index in corners:
                 return [i for i in range(len(self._board)) if i != index]
             regular.update(corners)
             regular.discard(index)
         return sorted(regular)
+
+    def _is_edge(self, coord: tuple[int, int]) -> bool:
+        return is_edge(coord, max_row=4 if self.s.fun_mode == "giant" else 3, max_col=7 if self.s.fun_mode == "giant" else 4)
+
+    def _is_corner(self, coord: tuple[int, int]) -> bool:
+        return is_corner(coord, max_row=4 if self.s.fun_mode == "giant" else 3, max_col=7 if self.s.fun_mode == "giant" else 4)
 
     def _present(self, instance: IngredientInstance) -> bool:
         return any(x.uid == instance.uid for x in self.s.ingredients)
@@ -679,12 +909,58 @@ class GameEngine:
                     total += int(bonus.get("amount", 0))
         return total
 
+    def _conditional_item_bonus(self, index: int, definition: dict[str, Any]) -> int:
+        """Evaluate data-driven value bonuses that depend on board context."""
+        total = 0
+        for item_id in self.s.items:
+            for rule in self.catalog.items[item_id].get("conditional_bonuses", []):
+                if not isinstance(rule, dict):
+                    continue
+                if rule.get("tag") and rule["tag"] not in definition.get("tags", []):
+                    continue
+                if rule.get("id") and rule["id"] != definition.get("id"):
+                    continue
+                condition = rule.get("condition", {})
+                if condition.get("adjacent_same_field"):
+                    field = str(condition["adjacent_same_field"])
+                    value = definition.get(field)
+                    if value is None or not any(
+                        self.catalog.ingredients[self._board[n].def_id].get(field) == value
+                        for n in self._neighbors(index)
+                        if n < len(self._board) and self._present(self._board[n])
+                    ):
+                        continue
+                total += int(rule.get("amount", 0))
+        return total
+
     def _base_values(self) -> list[int]:
         values: list[int] = []
         for i, instance in enumerate(self._board):
             definition = self.catalog.ingredients[instance.def_id]
             difficulty_override = self.difficulty_ingredient_override(instance.def_id)
-            value = int(definition.get("base", 0)) + instance.permanent_bonus + self._item_bonus(definition)
+            global_bonuses = self.s.flags.get("global_permanent_bonuses", {})
+            global_bonus = int(global_bonuses.get(definition["id"], 0))
+            if self.s.fun_mode == "minimal" and "special" not in definition.get("tags", []):
+                global_bonus *= 2
+            value = (
+                int(definition.get("base", 0))
+                + instance.permanent_bonus
+                + global_bonus
+                + self._item_bonus(definition)
+                + self._conditional_item_bonus(i, definition)
+            )
+            if self.s.fun_mode == "minimal" and "special" not in definition.get("tags", []):
+                rarity = int(definition.get("rarity", 0))
+                if 1 <= rarity <= 4:
+                    value += rarity
+            if self.s.flags.get("ingredient_generation_permanently_disabled"):
+                generation_bonus = int(self.s.flags.get("ingredient_generation_bonus", 0))
+                applied_bonus = int(instance.flags.get("ingredient_generation_bonus_applied", 0))
+                if self.ingredient_has_generation(definition):
+                    unapplied = max(0, generation_bonus - applied_bonus)
+                    if self.s.fun_mode == "minimal":
+                        unapplied *= 2
+                    value += unapplied
             spec = definition.get("value", {})
             neighbors = [self._board[n] for n in self._neighbors(i)]
             tags = set(definition.get("tags", []))
@@ -694,9 +970,9 @@ class GameEngine:
                 value += int(spec.get("bonus", 0)); self.emit("adjacency")
             if spec.get("if_no_adjacent_tag") and not any(self._has_tag(x, spec["if_no_adjacent_tag"]) for x in neighbors):
                 value += int(spec.get("bonus", 0))
-            if spec.get("position") == "edge" and is_edge(self._coords[i]):
+            if spec.get("position") == "edge" and self._is_edge(self._coords[i]):
                 value += int(spec.get("bonus", 0))
-            if spec.get("position") == "corner" and is_corner(self._coords[i]):
+            if spec.get("position") == "corner" and self._is_corner(self._coords[i]):
                 value += int(spec.get("bonus", 0))
             if spec.get("count_id"):
                 value += sum(1 for x in self._board if x.def_id == spec["count_id"]) * int(spec.get("per", 1))
@@ -761,6 +1037,7 @@ class GameEngine:
                     if affected:
                         self.emit("prism_type"); self.emit("adjacency", affected)
         for i, source in enumerate(self._board):
+            definition = self.catalog.ingredients[source.def_id]
             script = self.catalog.ingredients[source.def_id].get("script")
             if script == "collector":
                 result[i] += 2 * len({int(self.catalog.ingredients[x.def_id].get("rarity", 0)) for x in self._board})
@@ -774,11 +1051,31 @@ class GameEngine:
                 if opposite in coord_to_index:
                     result[i] += result[coord_to_index[opposite]]
             elif script == "pigment":
-                other = {self._board[n].def_id for n in self._neighbors(i)} & {"red_pigment","blue_pigment","yellow_pigment"}
-                other.discard(source.def_id)
-                if other:
+                pigment_color = definition.get("pigment_color")
+                same_color = pigment_color is not None and any(
+                    self.catalog.ingredients[self._board[n].def_id].get("pigment_color") == pigment_color
+                    for n in self._neighbors(i)
+                    if n < len(self._board) and self._present(self._board[n])
+                )
+                other_colors = {
+                    self.catalog.ingredients[self._board[n].def_id].get("pigment_color")
+                    for n in self._neighbors(i)
+                    if n < len(self._board)
+                    and self._present(self._board[n])
+                    and self.catalog.ingredients[self._board[n].def_id].get("pigment_color") is not None
+                    and self.catalog.ingredients[self._board[n].def_id].get("pigment_color") != pigment_color
+                }
+                if same_color:
+                    result[i] += 1; self.emit("adjacency")
+                if other_colors:
                     result[i] += 2; self.emit("adjacency")
-                if len(other) >= 2:
+                colors_on_board = {
+                    self.catalog.ingredients[x.def_id].get("pigment_color")
+                    for x in self._board
+                    if self._present(x) and self.catalog.ingredients[x.def_id].get("pigment_color") is not None
+                }
+                required_colors = set(self.catalog.progression.get("pigment_required_colors", []))
+                if required_colors and required_colors.issubset(colors_on_board):
                     result[i] += 2
         flag_multipliers = [
             ("cat_multiplier_spins", "cat", self.s.flags.get("cat_multiplier", 1)),
@@ -830,12 +1127,13 @@ class GameEngine:
         self._removed_values = []
         self.s.spin += 1
         self.s.spins_left -= 1
-        self._coords = board_coords(self.s.expanded)
+        self._coords = board_coords(self.s.expanded, self.s.fun_mode)
         self._board = self.r.sample(self.s.ingredients, min(len(self.s.ingredients), len(self._coords)))
         self._coords = self._coords[:len(self._board)]
         for inst in self._board:
             inst.age += 1
             inst.counter += 1
+        self._mark_mutation_draws()
         self._trigger_context_essences("board_tag_appearance", instances=list(self._board))
         self._panorama = "panorama_mirror" in self.s.items and self.s.spin % 3 == 0
         if self._panorama:
@@ -844,6 +1142,7 @@ class GameEngine:
             self.s.flags.get("all_adjacent_spins", 0)
             or ("global_reaction_field" in self.s.items and self.s.spin % 3 == 0)
         )
+        self._trigger_pigment_pair_essences()
         base_values = self._base_values()
         self._values = self._apply_multipliers(base_values)
         income = sum(self._values)
@@ -903,6 +1202,11 @@ class GameEngine:
             self.s.flags["order_book_reward"] = True
             self.emit("order_book_used")
         self.s.gold += income
+        # Post-settlement entertainment hooks run before ordinary ingredient
+        # rewards are queued.  They use the same remove/transform paths as
+        # normal card effects, so on-remove listeners remain consistent.
+        self._process_mutations()
+        self._rapid_delete_one()
         self.s.stats["last_income"] = income
         self._check_peace_goal()
         round_gold = max(0, int(self.s.gold - gold_at_spin_start))
@@ -937,8 +1241,18 @@ class GameEngine:
             self.s.last_log.append("难度规则向成分池加入1个废渣。")
         if self.s.status == "playing":
             force_choose = bool(self.s.flags.pop("force_choose", False))
-            if self.s.spins_left > 0:
-                self.s.pending.insert(0, self.make_choice("ingredient", source="spin", can_skip=not force_choose))
+            if self.s.spins_left > 0 or self.s.fun_mode == "rapid":
+                normal_rewards = [
+                    self.make_choice("ingredient", source="spin", can_skip=not force_choose)
+                ]
+                if self.s.fun_mode == "rapid":
+                    normal_rewards.append(
+                        self.make_choice("ingredient", source="spin", can_skip=not force_choose)
+                    )
+                # Keep the first normal reward ahead of the second, while
+                # preserving any pre-existing periodic choices behind them.
+                for reward in reversed(normal_rewards):
+                    self.s.pending.insert(0, reward)
             if self.s.flags.get("extra_choice_spins", 0):
                 self.s.pending.append(self.make_choice("ingredient", source="essence"))
             if self.s.spins_left <= 0:
@@ -968,19 +1282,21 @@ class GameEngine:
             if periodic_spawn:
                 every = self._effective_period(int(periodic_spawn["every"]), spawning=True)
                 if force_periodic or inst.counter >= every:
-                    self._spawn_random(
-                        tag=periodic_spawn.get("tag"),
-                        source=i,
-                        minimum_rarity=int(periodic_spawn.get("minimum_rarity", 1)),
-                        minimum_rarity_chance=periodic_spawn.get("minimum_rarity_chance"),
-                    )
+                    if not self.ingredient_generation_disabled():
+                        self._spawn_random(
+                            tag=periodic_spawn.get("tag"),
+                            source=i,
+                            minimum_rarity=int(periodic_spawn.get("minimum_rarity", 1)),
+                            minimum_rarity_chance=periodic_spawn.get("minimum_rarity_chance"),
+                            origin="ingredient",
+                        )
                     if periodic_spawn.get("permanent_bonus"):
                         self._permanent_bonus(inst, int(periodic_spawn["permanent_bonus"]))
                     self._periodic_reset(inst, every); self.emit("periodic")
-            if definition.get("spawn_each_spin"):
+            if definition.get("spawn_each_spin") and not self.ingredient_generation_disabled():
                 spec = definition["spawn_each_spin"]
-                self._spawn_random(tag=spec.get("tag"), def_id=spec.get("id"), source=i)
-            if definition.get("chance_spawn"):
+                self._spawn_random(tag=spec.get("tag"), def_id=spec.get("id"), source=i, origin="ingredient")
+            if definition.get("chance_spawn") and not self.ingredient_generation_disabled():
                 spec = definition["chance_spawn"]
                 chance = float(spec["chance"]) + sum(float(self.catalog.items[x].get("spawn_chance_bonus", 0)) for x in self.s.items)
                 if self._chance(chance):
@@ -999,6 +1315,7 @@ class GameEngine:
                         minimum_rarity=minimum_rarity,
                         def_id=spec.get("id"),
                         source=i,
+                        origin="ingredient",
                     )
                     if created and counter_name:
                         counters[counter_name] = 0 if guarantee_active else previous_successes + 1
@@ -1057,6 +1374,87 @@ class GameEngine:
                 if self.r.random() < chance:
                     self._remove(target, reason, board_index)
 
+    def _mutation_eligible(self, instance: IngredientInstance) -> bool:
+        definition = self.catalog.ingredients.get(instance.def_id, {})
+        rarity = int(definition.get("rarity", 0))
+        return (
+            1 <= rarity <= 4
+            and "special" not in definition.get("tags", [])
+            and definition.get("offerable", True)
+        )
+
+    def _mark_mutation_draws(self) -> None:
+        """Count board appearances per instance for mutation mode."""
+        if self.s.fun_mode != "mutation":
+            return
+        for instance in self._board:
+            if self._mutation_eligible(instance):
+                instance.mutation_draw_count += 1
+
+    def _mutate_instance(self, instance: IngredientInstance) -> bool:
+        """Mutate one existing instance without using the gain pipeline."""
+        if not self._mutation_eligible(instance):
+            instance.mutation_draw_count = 0
+            return False
+        old_id = instance.def_id
+        old_rarity = int(self.catalog.ingredients[old_id].get("rarity", 1))
+        # The 1% roll is an additional RNG draw only in mutation mode.  At
+        # rarity 4 it intentionally stays in the rarity-4 pool.
+        upgrade_roll = self.r.random()
+        upgraded = old_rarity < 4 and upgrade_roll < 0.01
+        target_rarity = min(4, old_rarity + (1 if upgraded else 0))
+        candidates = self._defs_at_rarity("ingredient", target_rarity, exclude={old_id})
+        if not candidates:
+            candidates = self._defs_at_rarity("ingredient", target_rarity)
+        if not candidates:
+            # A custom/minimal catalog can legitimately contain only one
+            # legal definition at this rarity.  The fifth draw still mutates
+            # (and resets its counter); retaining the identity is the only
+            # legal fallback when no alternative exists.
+            candidates = [{"id": old_id, "pool_weight": 1.0}]
+        new_id = self.r.weighted_choice(
+            [(row["id"], float(row.get("pool_weight", 1.0))) for row in candidates]
+        )
+        instance.def_id = new_id
+        instance.age = 0
+        instance.counter = 0
+        instance.stored_gold = 0
+        instance.flags = {}
+        instance.mutation_draw_count = 0
+        self.emit("mutated")
+        old_name = self.catalog.ingredients[old_id]["name"]
+        new_name = self.catalog.ingredients[new_id]["name"]
+        self.s.last_log.append(f"{old_name}变异为{new_name}。")
+        return True
+
+    def _process_mutations(self) -> None:
+        if self.s.fun_mode != "mutation":
+            return
+        for instance in list(self._board):
+            if self._present(instance) and instance.mutation_draw_count >= 5:
+                self._mutate_instance(instance)
+
+    def _rapid_delete_one(self) -> bool:
+        """Remove one random legal ingredient through the normal pipeline."""
+        if self.s.fun_mode != "rapid":
+            return False
+        candidates = [
+            instance for instance in self.s.ingredients
+            if self.catalog.ingredients[instance.def_id].get("removable", True)
+        ]
+        if not candidates:
+            return False
+        target = self.r.choice(candidates)
+        board_index = next(
+            (index for index, instance in enumerate(self._board)
+             if instance.uid == target.uid and self._present(instance)),
+            None,
+        )
+        removed = self._remove(target, "rapid", board_index)
+        if removed:
+            self.emit("rapid_removed")
+        return removed
+
     def _effective_period(self, every: int, spawning: bool = False) -> int:
         reduction = sum(int(self.catalog.items[x].get("counter_reduction", 0)) for x in self.s.items)
         if spawning:
@@ -1104,7 +1502,7 @@ class GameEngine:
         elif script == "herb":
             herbs = [n for n in neighbors if self._board[n].def_id == "herb"]
             if herbs:
-                other = self._board[herbs[0]]; self._remove(other, "combined", herbs[0]); self._remove(inst, "combined", index); self._spawn_random(tag="potion", source=index)
+                other = self._board[herbs[0]]; self._remove(other, "combined", herbs[0]); self._remove(inst, "combined", index); self._spawn_random(tag="potion", source=index, origin="ingredient")
         elif script == "mercenary":
             targets = [n for n in neighbors if self._has_tag(self._board[n], "monster")]
             if targets:
@@ -1126,13 +1524,19 @@ class GameEngine:
             if neighbors:
                 copied = self._board[self.r.choice(neighbors)].def_id
                 copies = self._potion_effect_multiplier()
+                created = 0
                 for _ in range(copies):
-                    self.add_ingredient(copied)
-                self.s.stats["recent_copied"] = copied
-                self.emit("copied", copies)
+                    if self._generated_ingredient(copied):
+                        created += 1
+                if created:
+                    self.s.stats["recent_copied"] = copied
+                    self.emit("copied", created)
             self._remove(inst, "potion", index)
         elif script == "removal_magic" and not self.negative_disabled() and neighbors and self._chance(0.3, negative=True):
             self._values[self.r.choice(neighbors)] = 0
+        elif script == "destroy_magic" and neighbors and self._chance(0.3):
+            target_index = self.r.choice(neighbors)
+            self._remove(self._board[target_index], "destroyed", target_index)
         elif script == "blank_magic" and not self.negative_disabled() and self._chance(0.3, negative=True): self.s.flags["blank_choice"] = True
         elif script == "greed_magic" and not self.negative_disabled() and self._chance(0.3, negative=True): self.s.flags["force_choose"] = True
         elif script == "alchemy_scrap":
@@ -1189,8 +1593,8 @@ class GameEngine:
         elif script == "master_craftsman" and inst.age % 10 == 0:
             for n in neighbors:
                 if self._has_tag(self._board[n], "equipment"): self._permanent_bonus(self._board[n], 1)
-        elif script == "vein" and inst.age % 5 == 0:
-            self._spawn_random(tag="ore", source=index); self._permanent_bonus(inst, 1); self.emit("periodic")
+        elif script == "vein" and inst.age % 8 == 0:
+            self._spawn_random(tag="ore", source=index, minimum_rarity=2, origin="ingredient"); self._permanent_bonus(inst, 1); self.emit("periodic")
         elif script == "super_bomb":
             for n in list(neighbors): self._remove(self._board[n], "exploded", n, payout_multiplier=7)
             self._remove(inst, "used", index)
@@ -1221,8 +1625,8 @@ class GameEngine:
                 gem = target.def_id == "gem_ore"
                 self._remove(target, "mined", n); self._gain_gold(10, "稿子")
                 if gem:
-                    for _ in range(3): self._spawn_random(tag="ore", minimum_rarity=2, source=index)
-                else: self._spawn_random(tag="metal", source=index)
+                    for _ in range(3): self._spawn_random(tag="ore", minimum_rarity=2, source=index, origin="ingredient")
+                else: self._spawn_random(tag="metal", source=index, origin="ingredient")
 
     def _flame(self, index: int) -> None:
         for n in list(self._neighbors(index)):
@@ -1232,7 +1636,7 @@ class GameEngine:
                 self._remove(target, "burned", n); self._gain_gold(50, "火焰"); self.emit("burned")
             elif self._has_tag(target, "wood"):
                 value = self._values[n] if n < len(self._values) else 0
-                self._remove(target, "burned", n); self._gain_gold(value * 10, "火焰"); self.add_ingredient("ash"); self.emit("burned")
+                self._remove(target, "burned", n); self._gain_gold(value * 10, "火焰"); self._generated_ingredient("ash"); self.emit("burned")
                 for j in self._neighbors(index):
                     if self._present(self._board[j]) and self._board[j].def_id == "furnace_core": self._permanent_bonus(self._board[j], 1)
 
@@ -1283,7 +1687,7 @@ class GameEngine:
                 self.add_item(item_id)
         if potion.get("recycle") and self.s.removed_history:
             for _ in range(multiplier):
-                self.add_ingredient(self.r.choice(self.s.removed_history))
+                self._generated_ingredient(self.r.choice(self.s.removed_history))
         if potion.get("purify"):
             choices = [x for x in self.s.ingredients if int(self.catalog.ingredients[x.def_id].get("rarity", 0)) == 1]
             for target in self.r.sample(choices, min(len(choices), multiplier)):
@@ -1363,7 +1767,13 @@ class GameEngine:
         minimum_rarity_chance: dict[str, Any] | None = None,
         def_id: str | None = None,
         source: int | None = None,
+        exclude: set[str] | None = None,
+        origin: str = "system",
     ) -> IngredientInstance | None:
+        if origin == "ingredient" and self.ingredient_generation_disabled():
+            return None
+        if def_id is not None and exclude and def_id in exclude:
+            def_id = None
         effective_minimum, once_keys = self._spawn_minimum_from_items(
             tag=tag,
             def_id=def_id,
@@ -1380,11 +1790,11 @@ class GameEngine:
         if def_id is None:
             if rarity is None or int(rarity) < effective_minimum:
                 rarity = self.roll_rarity("ingredient", minimum=effective_minimum)
-            def_id = self._draw_definition("ingredient", int(rarity), tag=tag)
+            def_id = self._draw_definition("ingredient", int(rarity), tag=tag, exclude=exclude)
         elif effective_minimum > int(self.catalog.ingredients[def_id].get("rarity", 0)):
             # An explicit low-rarity mineral cannot violate a stronger
             # generated minimum; draw another definition in the same family.
-            def_id = self._draw_definition("ingredient", effective_minimum, tag=tag)
+            def_id = self._draw_definition("ingredient", effective_minimum, tag=tag, exclude=exclude)
         created = self.add_ingredient(def_id)
         if created:
             for key in once_keys:
@@ -1405,6 +1815,8 @@ class GameEngine:
         old = inst.def_id
         inst.def_id = into
         inst.age = 0; inst.counter = 0; inst.flags = {}
+        inst.mutation_draw_count = 0
+        self._apply_generation_bonus_to_instance(inst)
         self.emit("transformed")
         try:
             index = next(i for i, current in enumerate(self._board) if current.uid == inst.uid)
@@ -1418,6 +1830,8 @@ class GameEngine:
         self.s.last_log.append(f"{self.catalog.ingredients[old]['name']}变化为{self.catalog.ingredients[into]['name']}。")
 
     def _permanent_bonus(self, inst: IngredientInstance, amount: int) -> None:
+        if self.s.fun_mode == "minimal" and amount:
+            amount *= 2
         inst.permanent_bonus += amount
         self.emit("permanent_bonus")
         if self._has_tag(inst, "liquid"): self.emit("liquid_permanent_bonus")
@@ -1434,12 +1848,17 @@ class GameEngine:
 
     def _remove(self, inst: IngredientInstance, reason: str, board_index: int | None, *, payout_multiplier: int = 1, fixed_payout: int | None = None) -> bool:
         if not self._present(inst): return False
-        if board_index is not None and reason in {"shattered","removed","consumed","killed","exploded","opened","burned"}:
+        if board_index is not None and reason in {"shattered","removed","consumed","killed","exploded","opened","burned","destroyed","rapid"}:
             for n in self._neighbors(board_index):
                 substitute = self._board[n]
                 if self._present(substitute) and substitute.def_id == "scapegoat" and substitute.uid != inst.uid and not substitute.flags.get(f"saved:{self.s.spin}"):
                     substitute.flags[f"saved:{self.s.spin}"] = True
-                    self._remove(substitute, "sacrificed", n, fixed_payout=8)
+                    self._remove(
+                        substitute,
+                        "sacrificed",
+                        n,
+                        fixed_payout=int(self.catalog.ingredients[substitute.def_id].get("sacrifice_reward_gold", 0)),
+                    )
                     return False
             for n in self._neighbors(board_index):
                 guard = self._board[n]
@@ -1483,7 +1902,12 @@ class GameEngine:
                     self._permanent_bonus(neighbor, 1)
                 if reason == "shattered" and neighbor.def_id == "glassmaker":
                     self._permanent_bonus(neighbor, 1)
-        if on_removed and on_removed.get("spawn_tag"): self._spawn_random(tag=on_removed["spawn_tag"])
+        if on_removed and on_removed.get("spawn_tag"):
+            self._spawn_random(
+                tag=on_removed["spawn_tag"],
+                exclude=set(on_removed.get("exclude", [])),
+                origin="ingredient",
+            )
         if on_removed and on_removed.get("item_rarity"): self.add_item(self._draw_definition("item", int(on_removed["item_rarity"])))
         if on_removed and on_removed.get("item_random"):
             rarity = self.roll_rarity("item"); self.add_item(self._draw_definition("item", rarity))
@@ -1491,7 +1915,7 @@ class GameEngine:
             self.add_item(self._draw_definition("item", 3));
             for token in ("remove","roll","essence"): self._gain_token(token, 1, "万能箱")
         if inst.def_id == "nine_lives_cat" and int(inst.flags.get("lives", 8)) > 0:
-            new = self.add_ingredient("nine_lives_cat")
+            new = self._generated_ingredient("nine_lives_cat")
             if new: new.flags["lives"] = int(inst.flags.get("lives", 8)) - 1
         if "equivalent_exchange" in self.s.items and not self._round_events.get("equivalent_exchange"):
             candidates = [x for x in self.s.ingredients if int(self.catalog.ingredients[x.def_id].get("rarity", 0)) == int(definition.get("rarity", 0))]
@@ -1499,10 +1923,38 @@ class GameEngine:
                 self._permanent_bonus(self.r.choice(candidates), int(definition.get("base", 0))); self._round_events["equivalent_exchange"] = 1
         return True
 
-    def _gain_token(self, token: str, amount: int, source: str) -> None:
+    def _gain_token(
+        self,
+        token: str,
+        amount: int,
+        source: str,
+        *,
+        _mode_processed: bool = False,
+    ) -> None:
+        """Add tokens while applying the active entertainment-mode transform."""
+        amount = int(amount)
+        if amount <= 0:
+            return
+        if not _mode_processed:
+            if self.s.fun_mode == "giant" and token == "remove":
+                amount *= 2
+            elif self.s.fun_mode == "rapid" and token == "roll":
+                amount *= 2
+            elif self.s.fun_mode == "blind_box" and token == "roll":
+                # Each original roll token is converted independently.  The
+                # recursive calls bypass this branch, preventing conversion
+                # of the resulting Delete/Essence tokens.
+                for _ in range(amount):
+                    converted = "remove" if self.r.random() < 0.5 else "essence"
+                    self._gain_token(converted, 1, source, _mode_processed=True)
+                return
         self.s.tokens[token] = int(self.s.tokens.get(token, 0)) + amount
         self.emit("token", amount)
         self.s.last_log.append(f"{source}：获得{amount}个{token} Token。")
+
+    def gain_token(self, token: str, amount: int, source: str) -> None:
+        """Public alias for the shared token-gain entry point."""
+        self._gain_token(token, amount, source)
 
     def _run_round_conditions(self, income: int) -> None:
         present_board = [x for x in self._board if self._present(x)]
@@ -1519,7 +1971,7 @@ class GameEngine:
             if condition.get("tag_count"): ok = tag_counts[condition["tag_count"]["tag"]] >= int(condition["tag_count"]["count"])
             if condition.get("pool_size") is not None: ok = len(self.s.ingredients) >= int(condition["pool_size"])
             if condition.get("empty_slots") is not None:
-                capacity = 21 if self.s.expanded else 20
+                capacity = self.board_capacity()
                 ok = capacity - len(present_board) >= int(condition["empty_slots"])
             if condition.get("same_count"): ok = max(Counter(ids).values(), default=0) >= int(condition["same_count"])
             if condition.get("all_unique"): ok = len(ids) == len(set(ids))
@@ -1538,6 +1990,21 @@ class GameEngine:
             same = 1 + sum(1 for n in self._neighbors(i) if self._board[n].def_id == inst.def_id)
             if same >= count: return True
         return False
+
+    def _trigger_pigment_pair_essences(self) -> None:
+        """Trigger the first same-colour pigment pair in stable board order."""
+        for index, instance in enumerate(self._board):
+            definition = self.catalog.ingredients[instance.def_id]
+            color = definition.get("pigment_color")
+            if color is None or not self._present(instance):
+                continue
+            if any(
+                self.catalog.ingredients[self._board[n].def_id].get("pigment_color") == color
+                for n in self._neighbors(index)
+                if n < len(self._board) and self._present(self._board[n])
+            ):
+                self._trigger_context_essences("adjacent_same", instance=instance)
+                return
 
     def _store_item_gold(self, item_id: str, amount: int, source: str) -> None:
         if amount <= 0:
@@ -1585,6 +2052,8 @@ class GameEngine:
             self.s.order_index = completed
         self.s.stats["last_completed_order_amount"] = amount
         self.emit("order_completed", value=amount)
+        if self.s.fun_mode == "minimal":
+            self._gain_token("remove", 1, "极简模式订单奖励")
         for item_id in list(self.s.items):
             savings = self.catalog.items[item_id].get("order_savings")
             if savings:
@@ -1726,6 +2195,13 @@ class GameEngine:
         elif choice.kind == "run_end":
             self._resolve_run_end_choice(selected)
             label = RUN_END_OPTIONS[selected]["name"]
+        elif choice.kind == "bundle":
+            option = choice.details.get("options", {}).get(selected, {})
+            if not isinstance(option, dict):
+                raise GameError("无效的组合选择")
+            for def_id in option.get("add_ingredients", []):
+                self.add_ingredient(str(def_id))
+            label = str(option.get("name", selected))
         else:
             self.add_essence(selected); label = self.catalog.essences[selected]["name"]
         self.s.last_log = [f"选择了{label}。"] + self.s.last_log[-3:]
@@ -1747,8 +2223,8 @@ class GameEngine:
         if not self.s.pending: raise GameError("当前没有待选奖励")
         if self.s.tokens.get("roll", 0) <= 0: raise GameError("没有Roll Token")
         old = self.s.pending[0]
-        if old.kind == "run_end":
-            raise GameError("结算模式选择不能重调")
+        if old.kind in {"run_end", "bundle"}:
+            raise GameError("该选择不能重调")
         if old.kind == "essence": raise GameError("精粹选择不能重调")
         self.s.tokens["roll"] -= 1; self.emit("token_spent"); self.emit("reroll")
         new = self.make_choice(old.kind, count=len(old.offers), source=old.source, can_skip=old.can_skip, guarantee_rarity=old.minimum_rarity, tag_filter=old.tag_filter)
@@ -1774,6 +2250,21 @@ class GameEngine:
         self.s.last_log = [f"删除了{definition['name']}。"]
         self.check_essences(); self._sync_rng()
         return inst.def_id
+
+    def toggle_item(self, item_id: str) -> bool:
+        """Toggle a data-declared item switch and return its requested state."""
+        if item_id not in self.s.items:
+            raise GameError("未持有该道具")
+        item = self.catalog.items[item_id]
+        flag = item.get("toggle_flag")
+        if not flag:
+            raise GameError("该道具没有可切换效果")
+        current = bool(self.s.flags.get(str(flag), False))
+        self.s.flags[str(flag)] = not current
+        state = "开启" if not current else "关闭"
+        self.s.last_log = [f"{item['name']}已{state}。"]
+        self._sync_rng()
+        return not current
 
     def use_item(self, item_id: str) -> None:
         if item_id not in self.s.items: raise GameError("未持有该道具")
@@ -1869,6 +2360,17 @@ class GameEngine:
                 if not targets:
                     continue
                 matched_context["instance"] = targets[0]
+            elif context_type == "adjacent_same":
+                spec = trigger.get("next_adjacent_same")
+                instance = context.get("instance")
+                if not spec or instance is None:
+                    continue
+                definition = self.catalog.ingredients[instance.def_id]
+                if spec.get("tag") and spec["tag"] not in definition.get("tags", []):
+                    continue
+                if spec.get("field") and definition.get(spec["field"]) is None:
+                    continue
+                matched_context["instance"] = instance
             else:
                 continue
             self._trigger_essence(essence_id, data, context=matched_context)
@@ -1876,7 +2378,7 @@ class GameEngine:
     def _trigger_ready(self, essence_id: str, trigger: dict[str, Any]) -> bool:
         if self.s.stats.get(f"essence_last_trigger:{essence_id}") == self.s.spin:
             return False
-        if any(key in trigger for key in ("before_choice", "next_permanent_bonus", "next_board_tag_appearance")):
+        if any(key in trigger for key in ("before_choice", "next_permanent_bonus", "next_board_tag_appearance", "next_adjacent_same")):
             return False
         baseline = self.s.stats.setdefault("essence_baseline", {}).get(essence_id, {"events":{},"values":{},"spin":self.s.spin})
         totals = self.s.stats.setdefault("event_counts", {})
@@ -1913,7 +2415,7 @@ class GameEngine:
         if trigger.get("board_all_unique") and len(board_defs) != len({d["id"] for d in board_defs}): return False
         if "board_adjacent_same" in trigger and not self._has_adjacent_same(int(trigger["board_adjacent_same"])): return False
         if "board_empty_slots" in trigger:
-            capacity = 21 if self.s.expanded else 20
+            capacity = self.board_capacity()
             occupied = sum(1 for instance in self._board if self._present(instance))
             if capacity - occupied < int(trigger["board_empty_slots"]): return False
         income=int(self.s.stats.get("last_income",0))
@@ -1959,13 +2461,28 @@ class GameEngine:
                     source="essence",
                     tag_filter=spec.get("tag"),
                 ))
+        if effect.get("disable_ingredient_generation"):
+            self.s.flags["ingredient_generation_permanently_disabled"] = True
+            amount = int(effect.get("generation_bonus", 0))
+            if amount:
+                self.s.flags["ingredient_generation_bonus"] = int(
+                    self.s.flags.get("ingredient_generation_bonus", 0)
+                ) + amount
         if effect.get("permanent_bonus"):
             spec=effect["permanent_bonus"]
+            target_ids: set[str] | None = None
+            if spec.get("context_id") and context.get("instance") is not None:
+                target_ids = {str(context["instance"].def_id)}
+            if spec.get("persistent") and target_ids:
+                global_bonuses = self.s.flags.setdefault("global_permanent_bonuses", {})
+                for target_id in target_ids:
+                    global_bonuses[target_id] = int(global_bonuses.get(target_id, 0)) + int(spec.get("amount", 0))
             for inst in self.s.ingredients:
                 definition=self.catalog.ingredients[inst.def_id]; tags=set(definition.get("tags",[]))
-                matches=spec.get("tag") in tags or bool(tags.intersection(spec.get("tags",[]))) or ("base" in spec and int(definition.get("base",0))==int(spec["base"]))
+                matches = bool(target_ids and definition["id"] in target_ids) or spec.get("tag") in tags or bool(tags.intersection(spec.get("tags",[]))) or ("base" in spec and int(definition.get("base",0))==int(spec["base"]))
                 if spec.get("rarity") and int(definition.get("rarity",0))!=int(spec["rarity"]): matches=False
-                if matches: self._permanent_bonus(inst,int(spec["amount"]))
+                if matches and not spec.get("persistent"):
+                    self._permanent_bonus(inst, int(spec["amount"]))
         if effect.get("random_permanent_bonus") and self.s.ingredients: self._permanent_bonus(self.r.choice(self.s.ingredients),int(effect["random_permanent_bonus"]))
         if effect.get("add_ingredient"):
             spec=effect["add_ingredient"]
@@ -1992,12 +2509,16 @@ class GameEngine:
         choice = self.s.pending[0] if self.s.pending else None
         return {
             "status": self.s.status, "seed": self.s.seed, "difficulty": self.s.difficulty,
+            "fun_mode": self.s.fun_mode,
             "gold": self.s.gold, "spin": self.s.spin,
             "order": self.s.order_index + 1, "order_amount": amount,
             "spins_left": self.s.spins_left, "order_spins": total_spins,
-            "pool_size": len(self.s.ingredients), "board_capacity": 21 if self.s.expanded else 20,
+            "pool_size": len(self.s.ingredients), "board_capacity": self.board_capacity(),
             "tokens": dict(self.s.tokens), "items": list(self.s.items), "essences": list(self.s.essences),
-            "pending": None if not choice else {"kind":choice.kind,"offers":list(choice.offers),"can_skip":choice.can_skip,"source":choice.source,"tag_filter":choice.tag_filter},
+            "pending": None if not choice else {"kind":choice.kind,"offers":list(choice.offers),"can_skip":choice.can_skip,"source":choice.source,"tag_filter":choice.tag_filter,"details":dict(choice.details)},
+            "ingredient_generation_disabled": self.ingredient_generation_disabled(),
+            "ingredient_generation_permanently_disabled": bool(self.s.flags.get("ingredient_generation_permanently_disabled", False)),
+            "ingredient_generation_bonus": int(self.s.flags.get("ingredient_generation_bonus", 0)),
             "awaiting_mode_choice": bool(choice and choice.kind == "run_end"),
             "endless_mode": bool(self.s.endless_mode),
             "endless_order": int(self.s.endless_order),
@@ -2043,7 +2564,7 @@ class GameEngine:
             actions.extend(f"choose {index}" for index in range(1, len(choice.offers) + 1))
             if choice.can_skip:
                 actions.append("skip")
-            if choice.kind not in {"essence", "run_end"} and self.s.tokens.get("roll", 0) > 0:
+            if choice.kind not in {"essence", "run_end", "bundle"} and self.s.tokens.get("roll", 0) > 0:
                 actions.append("reroll")
             return actions
         actions.append("spin")
@@ -2053,6 +2574,8 @@ class GameEngine:
                 if definition.get("removable", True):
                     actions.append(f"remove {index}")
         for item_id in self.s.items:
+            if self.catalog.items[item_id].get("toggle_flag"):
+                actions.append(f"toggle {item_id}")
             active = self.catalog.items[item_id].get("active")
             if not active:
                 continue
@@ -2076,7 +2599,7 @@ class GameEngine:
                 specs.append({"action": "choose", "index": index, "id": def_id})
             if choice.can_skip:
                 specs.append({"action": "skip"})
-            if choice.kind not in {"essence", "run_end"} and self.s.tokens.get("roll", 0) > 0:
+            if choice.kind not in {"essence", "run_end", "bundle"} and self.s.tokens.get("roll", 0) > 0:
                 specs.append({"action": "reroll"})
             return specs
         specs.append({"action": "spin"})
@@ -2086,6 +2609,8 @@ class GameEngine:
                 if definition.get("removable", True):
                     specs.append({"action": "remove", "index": index, "id": instance.def_id})
         for item_id in self.s.items:
+            if self.catalog.items[item_id].get("toggle_flag"):
+                specs.append({"action": "toggle", "item_id": item_id, "enabled": self.ingredient_generation_disabled()})
             active = self.catalog.items[item_id].get("active")
             if active and (not active.get("order_book") or self.s.spins_left == 1):
                 specs.append({"action": "use", "item_id": item_id})
@@ -2118,6 +2643,7 @@ class GameEngine:
                 "age": instance.age,
                 "counter": instance.counter,
                 "stored_gold": instance.stored_gold,
+                "mutation_draw_count": instance.mutation_draw_count,
                 "flags": dict(instance.flags),
                 "definition": self._definition_view("ingredient", instance.def_id),
             }
@@ -2132,7 +2658,11 @@ class GameEngine:
                 {
                     "index": index,
                     "id": def_id,
-                    "definition": self._definition_view(kind, def_id),
+                    "definition": (
+                        dict(choice.details.get("options", {}).get(def_id, {}))
+                        if kind == "bundle"
+                        else self._definition_view(kind, def_id)
+                    ),
                 }
                 for index, def_id in enumerate(choice.offers, 1)
             ]

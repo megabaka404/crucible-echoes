@@ -66,9 +66,17 @@ class OrdersTokensEssencesTests(unittest.TestCase):
         for difficulty, count in ((1,0),(5,1),(6,2),(8,3),(10,3),(12,3),(15,3)):
             engine = GameEngine(); engine.new_game(1, difficulty)
             self.assertEqual(count, sum(x.def_id == "slag" for x in engine.s.ingredients))
-        self.assertEqual(15, GameEngine.slag_interval(7))
-        self.assertEqual(15, GameEngine.slag_interval(8))
-        self.assertEqual(15, GameEngine.slag_interval(10))
+        self.assertEqual(20, GameEngine.slag_interval(7))
+        self.assertEqual(20, GameEngine.slag_interval(8))
+        self.assertEqual(20, GameEngine.slag_interval(10))
+
+    def test_d7_adds_periodic_slag_on_the_twentieth_spin(self) -> None:
+        engine = GameEngine(); engine.new_game(1, difficulty=7)
+        engine.s.spin = 19
+        engine.s.spins_left = 2
+        before = sum(x.def_id == "slag" for x in engine.s.ingredients)
+        engine.spin()
+        self.assertEqual(before + 1, sum(x.def_id == "slag" for x in engine.s.ingredients))
 
     def test_even_order_awards_tokens_with_cumulative_per_token_rules(self) -> None:
         for difficulty, expected_remove, expected_roll, expected_essence in ((1,2,2,2),(4,1,1,2),(10,1,1,1)):

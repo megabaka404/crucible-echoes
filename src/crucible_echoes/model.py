@@ -13,6 +13,11 @@ class IngredientInstance:
     counter: int = 0
     stored_gold: int = 0
     flags: dict[str, Any] = field(default_factory=dict)
+    # ``mutation`` entertainment mode keeps this per-instance counter.  It is
+    # a dataclass field (rather than a process-local map) so stateless Agent
+    # actions and JSON saves preserve it naturally.  Older saves omit it and
+    # receive the default zero during deserialization.
+    mutation_draw_count: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "IngredientInstance":
@@ -27,6 +32,10 @@ class PendingChoice:
     source: str = "spin"
     minimum_rarity: int | None = None
     tag_filter: str | None = None
+    # Optional data for non-standard but still data-driven choices (for
+    # example an all-or-nothing ingredient bundle).  Older saves simply omit
+    # this field and get an empty mapping.
+    details: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PendingChoice":
@@ -65,6 +74,10 @@ class GameState:
     endless_target: int = 0
     peace_mode: bool = False
     peace_order: int = 0
+    # Entertainment modes are orthogonal to difficulty and mutually
+    # exclusive.  Appending the field keeps positional/legacy JSON loading
+    # compatible while ``from_dict`` supplies ``none`` to old saves.
+    fun_mode: str = "none"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -90,4 +103,5 @@ class GameState:
         copied.setdefault("endless_target", 0)
         copied.setdefault("peace_mode", False)
         copied.setdefault("peace_order", 0)
+        copied.setdefault("fun_mode", "none")
         return cls(**copied)

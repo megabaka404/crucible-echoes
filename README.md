@@ -17,6 +17,23 @@ py -3 game.py new --seed 42 --difficulty 1
 py -3 game.py start
 ```
 
+新局可用 `--fun-mode` 选择一个与难度独立且互斥的娱乐模式：
+
+```powershell
+py -3 game.py new --seed 42 --difficulty 10 --fun-mode giant
+py -3 game.py new --seed 42 --difficulty 10 --fun-mode rapid
+py -3 game.py new --seed 42 --difficulty 10 --fun-mode blind_box
+py -3 game.py new --seed 42 --difficulty 10 --fun-mode minimal
+py -3 game.py new --seed 42 --difficulty 10 --fun-mode mutation
+```
+
+省略时为 `none`。`giant` 使用40格并复制成分、翻倍 Delete Token 和订单目标；
+`rapid` 每回合自动删除一个成分、提供两次普通成分奖励并翻倍 Roll Token；
+`blind_box` 将每次成分获得独立随机化，第4份主线订单起目标按80%向上取整，
+并把 Roll Token 独立转换为 Delete 或 Essence；`minimal` 使用12格、按稀有度给成分
+加值、翻倍永久成长并在每份订单后给一个 Delete Token；`mutation` 让正常成分每被
+抽到5次后变为同级（1%升级）的另一成分。娱乐模式不会改变 `none` 的规则。
+
 默认存档为 `.saves/current.json`，可用 `--save path.json` 指定其他路径。
 
 常用人类命令：
@@ -30,6 +47,7 @@ reroll                 使用 Roll Token
 remove N               使用 Delete Token 移除第 N 格
 inventory              查看物品、装备和精粹
 use ITEM_ID            使用可主动使用的物品
+toggle ITEM_ID         开关可切换道具（如禁令）
 help                   查看帮助
 ```
 
@@ -39,11 +57,12 @@ Agent 每次进程只执行一个动作，通过 JSON 存档持久化状态，�
 
 ```powershell
 py -3 game.py agent new --seed 42 --difficulty 1 --save .saves/agent.json
+py -3 game.py agent new --seed 42 --difficulty 1 --fun-mode minimal --save .saves/agent-minimal.json
 py -3 game.py agent spin --save .saves/agent.json
 py -3 game.py agent status --save .saves/agent.json
 ```
 
-支持的动作包括：`new`、`status`、`spin`、`choose N`、`skip`、`reroll`、`remove N`、`inventory`、`use ITEM_ID` 和 `help`。
+支持的动作包括：`new`、`status`、`spin`、`choose N`、`skip`、`reroll`、`remove N`、`inventory`、`use ITEM_ID`、`toggle ITEM_ID` 和 `help`。`agent new` 的 `--fun-mode` 接受 `none`、`giant`、`rapid`、`blind_box`、`minimal`、`mutation`；状态中的 `fun_mode` 会持续保存。持有「禁令」时用 `toggle ban` 开关成分自身生成。
 
 协议细节见 [`docs/AGENT_INTERFACE.md`](docs/AGENT_INTERFACE.md)。
 
@@ -51,9 +70,9 @@ py -3 game.py agent status --save .saves/agent.json
 
 ## 内容规模
 
-- **成分：145 个**：1 级 45 个、2 级 55 个、3 级 34 个、4 级 10 个，另有特殊成分“废渣”。成分会放入实验台并参与邻接、生成、移除和价值结算。
-- **物品：116 个**：1 级 49 个、2 级 32 个、3 级 23 个、4 级 12 个。物品提供持续收益、周期触发、构筑联动或主动操作效果；例如“订单附页”会在完成订单时额外提供一次普通成分选择。
-- **精粹：106 个**：通过 Essence Token 激活，通常提供一次性的强化或补救效果。
+- **成分：146 个**：1 级 45 个、2 级 56 个、3 级 34 个、4 级 10 个，另有特殊成分“废渣”。成分会放入实验台并参与邻接、生成、移除和价值结算。
+- **物品：119 个**：1 级 50 个、2 级 33 个、3 级 24 个、4 级 12 个。物品提供持续收益、周期触发、构筑联动或主动操作效果；例如“禁令”可用 `toggle ban` 切换成分自身生成，“颜料盒”提供整组接受/放弃选择。
+- **精粹：108 个**：通过 Essence Token 激活，通常提供一次性的强化或补救效果；调色板精粹和禁令精粹会建立对应的永久全局状态。
 - **难度：15 级**：D1-D10 保持原有规则；D11 最终订单+75g，D12 让废渣价值恒为0g且多留2回合，D13 第12单+23g并使全局稀有度权重×0.95，D14 最终订单再+75g，D15 从第4单起每次成功结算后最多扣7g。D10及以上仍需完成额外的最终订单。
 
 基础实验台为 4×5 共 20 格，工程图纸可永久扩建 1 格。完整规则和具体效果见 [`docs/SPEC.md`](docs/SPEC.md)。
