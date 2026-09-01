@@ -90,15 +90,23 @@ py -3 run_tests.py
 
 欢迎提交新的成分、物品、精粹、测试和模拟分析。请尽量保持数据驱动、可复现，并为新机制补充回归测试。
 
-## Credits
+致谢
 
-Developed with assistance from **ChatGPT by OpenAI** and **OpenAI Codex**.
+本项目在 OpenAI 的 ChatGPT 与 OpenAI Codex 的协助下开发完成。
 
-## Endless mode
+无限模式
 
-After the final mainline order is settled, choose `end_run` to finish with
-`won`, `enter_endless` to continue with 10-round orders starting at 1000g, or
-`enter_peace` to continue with 7-round, 0g orders until the bank reaches
-1,000,000g. Endless targets use `ceil(previous_target * 1.5)`. See
-[`docs/ENDLESS_MODE.md`](docs/ENDLESS_MODE.md) for state fields, save
-compatibility, and agent commands.
+结算最终主线订单后，你可以选择：
+
+end_run：结束本局，状态变为 won
+enter_endless：进入无限模式，继续挑战从 1000g 开始的 10回合订单
+enter_peace：进入和平模式，继续进行 7回合 / 0g 的订单，直到存款达到 1,000,000g后胜利
+
+无限模式中，每个新订单的目标金额按照：
+
+ceil(上一份订单目标 × 1.5)
+
+计算，也就是向上取整。
+
+关于状态字段、存档兼容性以及 Agent 命令的详细说明，请参阅 [`docs/ENDLESS_MODE.md`](docs/ENDLESS_MODE.md) 
+
