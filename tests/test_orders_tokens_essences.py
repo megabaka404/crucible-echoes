@@ -16,8 +16,54 @@ class OrdersTokensEssencesTests(unittest.TestCase):
         self.assertEqual((1350, 15), engine.current_order_for(12, 10, {}))
         self.assertEqual((1000, 10), engine.current_order_for(12, 1, {}))
 
+    def test_d11_to_d15_inherit_final_order_and_order12_rules(self) -> None:
+        expected_final = {10: 1350, 11: 1425, 12: 1425, 13: 1425, 14: 1500, 15: 1500}
+        for difficulty, amount in expected_final.items():
+            engine = GameEngine(); engine.new_game(1, difficulty=difficulty)
+            self.assertEqual((amount, 15), engine.current_order_for(12, difficulty, {}))
+        d13 = GameEngine(); d13.new_game(1, difficulty=13)
+        self.assertEqual((800, 10), d13.current_order_for(11, 13, {}))
+        self.assertAlmostEqual(0.95, d13.current_rarity_multiplier())
+
+    def test_d12_slag_is_zero_value_and_lasts_two_extra_rounds(self) -> None:
+        d12 = GameEngine(); d12.new_game(1, difficulty=12)
+        d12.s.ingredients.clear()
+        d12.s.items.append("magnifier")
+        slag = d12.add_ingredient("slag", emit=False)
+        self.assertIsNotNone(slag)
+        d12._board = [slag]
+        d12._coords = [(0, 0)]
+        self.assertEqual([0], d12._base_values())
+
+        slag.age = 33
+        d12._values = [0]
+        d12._run_active_effects()
+        self.assertIn(slag, d12.s.ingredients)
+        slag.age = 35
+        d12._run_active_effects()
+        self.assertNotIn(slag, d12.s.ingredients)
+
+    def test_d15_post_order_deduction_never_causes_negative_or_failure(self) -> None:
+        engine = GameEngine(); engine.new_game(1, difficulty=15)
+        engine.s.order_index = 3
+        engine.s.spins_left = 1
+        engine.s.gold = 200
+        engine.s.ingredients.clear()
+        engine.spin()
+        self.assertEqual("playing", engine.s.status)
+        self.assertEqual(43, engine.s.gold)
+
+        exact = GameEngine(); exact.new_game(2, difficulty=15)
+        exact.s.order_index = 3
+        exact.s.spins_left = 1
+        exact.s.gold = 150
+        exact.s.ingredients.clear()
+        exact.spin()
+        self.assertEqual("playing", exact.s.status)
+        self.assertEqual(0, exact.s.gold)
+
     def test_initial_slag_and_interval_rules(self) -> None:
-        for difficulty, count in ((1,0),(5,1),(6,2),(8,3),(10,3)):
+        for difficulty, count in ((1,0),(5,1),(6,2),(8,3),(10,3),(12,3),(15,3)):
             engine = GameEngine(); engine.new_game(1, difficulty)
             self.assertEqual(count, sum(x.def_id == "slag" for x in engine.s.ingredients))
         self.assertEqual(15, GameEngine.slag_interval(7))

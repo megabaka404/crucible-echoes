@@ -28,7 +28,7 @@ def _safe_stdout(text: str, end: str = "") -> None:
             sys.stdout.write(payload.encode("ascii", errors="replace").decode("ascii"))
 
 COMMAND_HELP = """可用命令：
-  new --seed N --difficulty 1..10   新开一局
+  new --seed N --difficulty 1..15   新开一局
   start                              进入交互模式（自动读取存档）
   status                             查看订单、金币、最近盘面和待选奖励
   spin                               旋转并结算
@@ -81,10 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("--json-report", default="reports/balance_report.json", help="JSON明细报告路径")
     simulate.add_argument("--summary-only", action="store_true", help="只保留汇总和内容统计，适合大规模扫描")
 
-    sweep = sub.add_parser("simulate-sweep", help="批量模拟难度1-10")
+    sweep = sub.add_parser("simulate-sweep", help="批量模拟难度1-15")
     sweep.add_argument("--seed", type=int, default=1, help="固定base seed")
     sweep.add_argument("--games-low", type=int, default=1000, help="难度1-5每档局数")
-    sweep.add_argument("--games-high", type=int, default=500, help="难度6-10每档局数")
+    sweep.add_argument("--games-high", type=int, default=500, help="难度6-15每档局数")
     sweep.add_argument("--strategy", choices=("heuristic-v1", "heuristic-v2", "heuristic-v3", "heuristic-v3.1"), default="heuristic-v1")
     sweep.add_argument("--max-actions", type=int, default=5000, help="单局动作上限")
     sweep.add_argument("--report", default="reports/balance_sweep.md", help="汇总Markdown报告")
@@ -130,6 +130,8 @@ def render(engine: GameEngine, *, inventory: bool = False) -> str:
     amount = payload["order_amount"]
     if payload.get("endless_mode"):
         lines.append(f"无限模式：第{payload['endless_order']}份无限订单 / 目标{payload['endless_target']}g / 剩余{payload['spins_left']}回合")
+    if payload.get("peace_mode"):
+        lines.append(f"和平模式：第{payload['peace_order'] + 1}份和平订单 / 目标0g / 剩余{payload['spins_left']}回合 / 目标存款{payload['peace_target']}g")
     lines.append(f"状态：{payload['status']}  金币：{payload['gold']}g  难度：{payload['difficulty']}")
     lines.append(f"订单：第{payload['order']}份 / {amount}g  剩余旋转：{payload['spins_left']}")
     lines.append(f"实验池：{payload['pool_size']}个成分  盘面容量：{payload['board_capacity']}格  seed：{payload['seed']}")
@@ -273,8 +275,8 @@ def run_agent(ns: argparse.Namespace) -> int:
 
 
 def run_simulation_command(ns: argparse.Namespace) -> int:
-    if not 1 <= ns.difficulty <= 10:
-        raise GameError("难度必须在1到10之间")
+    if not 1 <= ns.difficulty <= 15:
+        raise GameError("难度必须在1到15之间")
     if ns.games < 1:
         raise GameError("模拟局数必须至少为1")
     if ns.max_actions < 1:
@@ -300,7 +302,7 @@ def run_simulation_sweep_command(ns: argparse.Namespace) -> int:
         raise GameError("单局动作上限必须至少为1")
     games_by_difficulty = {
         difficulty: ns.games_low if difficulty <= 5 else ns.games_high
-        for difficulty in range(1, 11)
+        for difficulty in range(1, 16)
     }
     report = run_difficulty_sweep(
         games_by_difficulty=games_by_difficulty,

@@ -29,7 +29,9 @@ class EndlessModeTests(unittest.TestCase):
         engine.new_game(90210, difficulty=difficulty)
         engine.s.order_index = 11
         engine.s.spins_left = 1
-        engine.s.gold = 1_000_000
+        # Keep enough gold to settle the prepared order without accidentally
+        # satisfying the peace-mode target before entering it.
+        engine.s.gold = 1_000
         engine.spin()
         return engine
 
@@ -37,6 +39,7 @@ class EndlessModeTests(unittest.TestCase):
         engine = self.mainline_ready()
         self.assertEqual("playing", engine.s.status)
         self.assertEqual("run_end", engine.s.pending[-1].kind)
+        self.assertEqual(["end_run", "enter_endless", "enter_peace"], engine.s.pending[-1].offers)
         self.finish_rewards(engine, mode_choice=1)
         self.assertEqual("won", engine.s.status)
         self.assertFalse(engine.s.endless_mode)
@@ -91,6 +94,45 @@ class EndlessModeTests(unittest.TestCase):
         self.assertTrue(engine.s.endless_mode)
         self.assertEqual(1, engine.s.endless_order)
 
+    def test_enter_peace_preserves_mainline_and_loops_zero_gold_orders(self) -> None:
+        engine = self.mainline_ready()
+        self.finish_rewards(engine, mode_choice=3)
+        self.assertEqual("playing", engine.s.status)
+        self.assertTrue(engine.s.peace_mode)
+        self.assertEqual(0, engine.s.peace_order)
+        self.assertEqual((0, 7), engine.current_order())
+        self.assertEqual(7, engine.s.spins_left)
+        mainline_order = engine.s.order_index
+
+        engine.s.ingredients.clear()
+        engine.s.gold = 0
+        engine.s.spins_left = 1
+        engine.spin()
+        self.assertEqual("playing", engine.s.status)
+        self.assertEqual(mainline_order, engine.s.order_index)
+        self.assertEqual(1, engine.s.peace_order)
+        self.assertEqual((0, 7), engine.current_order())
+        self.assertEqual(7, engine.s.spins_left)
+
+    def test_peace_mode_auto_wins_at_one_million_gold(self) -> None:
+        engine = self.mainline_ready()
+        self.finish_rewards(engine, mode_choice=3)
+        engine.s.ingredients.clear()
+        engine.add_item("money_box")
+        engine.s.gold = 999_999
+        engine.s.spins_left = 7
+        engine.spin()
+        self.assertEqual("won", engine.s.status)
+        self.assertTrue(engine.s.peace_mode)
+        self.assertGreaterEqual(engine.s.gold, 1_000_000)
+
+    def test_enter_peace_at_target_finishes_immediately(self) -> None:
+        engine = self.mainline_ready()
+        engine.s.gold = 1_000_000
+        self.finish_rewards(engine, mode_choice=3)
+        self.assertEqual("won", engine.s.status)
+        self.assertTrue(engine.s.peace_mode)
+
     def test_endless_state_save_round_trip_and_legacy_defaults(self) -> None:
         engine = self.mainline_ready()
         self.finish_rewards(engine, mode_choice=2)
@@ -105,6 +147,8 @@ class EndlessModeTests(unittest.TestCase):
         legacy.pop("endless_mode")
         legacy.pop("endless_order")
         legacy.pop("endless_target")
+        legacy.pop("peace_mode")
+        legacy.pop("peace_order")
         for key in (
             "endless_orders_completed",
             "highest_endless_order",
@@ -117,6 +161,8 @@ class EndlessModeTests(unittest.TestCase):
         self.assertEqual(0, restored_legacy.s.endless_order)
         self.assertEqual(0, restored_legacy.s.endless_target)
         self.assertEqual(0, restored_legacy.s.stats["highest_endless_order"])
+        self.assertFalse(restored_legacy.s.peace_mode)
+        self.assertEqual(0, restored_legacy.s.peace_order)
 
     def test_agent_can_select_endless_mode_from_persisted_prompt(self) -> None:
         engine = self.mainline_ready()
@@ -136,6 +182,22 @@ class EndlessModeTests(unittest.TestCase):
             state = load_game(path)
             self.assertTrue(state.endless_mode)
             self.assertEqual(1000, state.endless_target)
+
+    def test_agent_can_select_peace_mode_from_persisted_prompt(self) -> None:
+        engine = self.mainline_ready()
+        while len(engine.s.pending) > 1:
+            engine.choose(1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "peace.json"
+            save_game(engine.s, path)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main(["agent", "choose", "3", "--save", str(path)])
+            self.assertEqual(0, code)
+            payload = json.loads(output.getvalue().strip()[len("[STATE] "):])
+            self.assertTrue(payload["peace_mode"])
+            self.assertEqual(7, payload["spins_left"])
+            self.assertIn("peace_mode", payload["order_detail"])
 
 
 if __name__ == "__main__":

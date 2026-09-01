@@ -30,10 +30,11 @@ The JSON envelope contains:
   (old saves receive an empty object automatically);
 - `available_actions`: executable command strings for the next step;
 - `available_action_specs`: the same actions in structured form;
-- `endless_mode`, `endless_order`, `endless_target`, and `order_detail`: the
-  current infinite-order state and remaining rounds.  After the final
-  mainline reward, a `run_end` pending choice exposes `choose 1` (end) and
-  `choose 2` (enter infinite mode);
+- `endless_mode`, `endless_order`, `endless_target`, `peace_mode`,
+  `peace_order`, and `order_detail`: the current post-mainline mode and
+  remaining rounds. After the final mainline reward, a `run_end` pending choice
+  exposes `choose 1` (end), `choose 2` (enter infinite mode), and `choose 3`
+  (enter peace mode);
 - `ok`, `action`, and `error`: the result of the just-completed operation.
 
 ## One-step usage

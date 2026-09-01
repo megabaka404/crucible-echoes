@@ -86,7 +86,7 @@ py -3 game.py simulate-sweep `
 - **成分：145 个**：1 级 45 个、2 级 55 个、3 级 34 个、4 级 10 个，另有特殊成分“废渣”。成分会放入实验台并参与邻接、生成、移除和价值结算。
 - **物品：116 个**：1 级 49 个、2 级 32 个、3 级 23 个、4 级 12 个。物品提供持续收益、周期触发、构筑联动或主动操作效果；例如“订单附页”会在完成订单时额外提供一次普通成分选择。
 - **精粹：106 个**：通过 Essence Token 激活，通常提供一次性的强化或补救效果。
-- **难度：10 级**：D1 为标准规则，D2-D10 累加订单加价、Token 调整、废渣和最终订单等压力；D10 需要额外完成 15 回合内的 1350g 订单。
+- **难度：15 级**：D1-D10 保持原有规则；D11 最终订单+75g，D12 让废渣价值恒为0g且多留2回合，D13 第12单+23g并使全局稀有度权重×0.95，D14 最终订单再+75g，D15 从第4单起每次成功结算后最多扣7g。D10及以上仍需完成额外的最终订单。
 
 基础实验台为 4×5 共 20 格，工程图纸可永久扩建 1 格。完整规则和具体效果见 [`docs/SPEC.md`](docs/SPEC.md)。
 
@@ -129,7 +129,8 @@ Developed with assistance from **ChatGPT by OpenAI** and **OpenAI Codex**.
 ## Endless mode
 
 After the final mainline order is settled, choose `end_run` to finish with
-`won`, or `enter_endless` to continue with 10-round orders starting at 1000g.
-The next target is `ceil(previous_target * 1.5)`. See
+`won`, `enter_endless` to continue with 10-round orders starting at 1000g, or
+`enter_peace` to continue with 7-round, 0g orders until the bank reaches
+1,000,000g. Endless targets use `ceil(previous_target * 1.5)`. See
 [`docs/ENDLESS_MODE.md`](docs/ENDLESS_MODE.md) for state fields, save
 compatibility, and agent commands.

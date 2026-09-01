@@ -555,7 +555,7 @@ class SimulationTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertTrue(markdown.exists())
             self.assertTrue(payload.exists())
-            self.assertEqual(10, len(json.loads(payload.read_text(encoding="utf-8"))["win_rate_curve"]))
+            self.assertEqual(15, len(json.loads(payload.read_text(encoding="utf-8"))["win_rate_curve"]))
             self.assertTrue((details / "balance_d10.json").exists())
 
 

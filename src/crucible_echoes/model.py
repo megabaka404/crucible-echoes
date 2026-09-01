@@ -63,6 +63,8 @@ class GameState:
     endless_mode: bool = False
     endless_order: int = 0
     endless_target: int = 0
+    peace_mode: bool = False
+    peace_order: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -83,4 +85,9 @@ class GameState:
         stats.setdefault("highest_endless_single_turn_gold", 0)
         stats.setdefault("highest_single_turn_gold", 0)
         copied["stats"] = stats
+        copied.setdefault("endless_mode", False)
+        copied.setdefault("endless_order", 0)
+        copied.setdefault("endless_target", 0)
+        copied.setdefault("peace_mode", False)
+        copied.setdefault("peace_order", 0)
         return cls(**copied)

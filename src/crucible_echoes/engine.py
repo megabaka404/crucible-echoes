@@ -26,7 +26,14 @@ RUN_END_OPTIONS = {
         "name": "进入无限模式",
         "description": "保留当前状态，进入10回合的无限订单1。",
     },
+    "enter_peace": {
+        "id": "enter_peace",
+        "name": "进入和平模式",
+        "description": "保留当前状态，进入7回合、0g的和平订单，达到1000000g时胜利。",
+    },
 }
+
+PEACE_MODE_TARGET = 1_000_000
 
 
 class GameEngine:
@@ -45,8 +52,8 @@ class GameEngine:
         self._triggering_essences: set[str] = set()
 
     def new_game(self, seed: int, difficulty: int = 1) -> GameState:
-        if not 1 <= difficulty <= 10:
-            raise GameError("难度必须在1到10之间")
+        if not 1 <= difficulty <= 15:
+            raise GameError("难度必须在1到15之间")
         self.rng = DeterministicRNG(seed & ((1 << 64) - 1))
         self._round_events = defaultdict(int)
         self._round_event_values = defaultdict(int)
@@ -87,6 +94,8 @@ class GameEngine:
             endless_mode=False,
             endless_order=0,
             endless_target=0,
+            peace_mode=False,
+            peace_order=0,
         )
         self.state = state
         for def_id in self.catalog.progression["initial_ingredients"]:
@@ -170,9 +179,12 @@ class GameEngine:
             amount = 1000 + 500 * (completed - 12)
             spins = 10
         number = completed + 1
-        bonus_thresholds = {7: 2, 8: 3, 10: 6, 11: 7, 9: 9}
-        if difficulty >= bonus_thresholds.get(number, 99):
-            amount += 25
+        for threshold, rule in self.catalog.progression.get("difficulty", {}).items():
+            if difficulty < int(threshold):
+                continue
+            for order_number, bonus in rule.get("order_bonus", {}).items():
+                if int(order_number) == number:
+                    amount += int(bonus)
         final_order = self._final_order_for(completed, difficulty)
         if final_order:
             amount = int(final_order["amount"])
@@ -208,9 +220,41 @@ class GameEngine:
         return amounts
 
     def current_order(self) -> tuple[int, int]:
+        if self.s.peace_mode:
+            return 0, 7
         if self.s.endless_mode:
             return max(0, int(self.s.endless_target)), 10
         return self.current_order_for(self.s.order_index, self.s.difficulty, self.s.flags)
+
+    def difficulty_ingredient_override(self, def_id: str) -> dict[str, Any]:
+        """Merge declarative difficulty overrides for one ingredient ID."""
+        overrides: dict[str, Any] = {}
+        for threshold, rule in self.catalog.progression.get("difficulty", {}).items():
+            if self.s.difficulty < int(threshold):
+                continue
+            candidate = rule.get("ingredient_overrides", {}).get(def_id)
+            if isinstance(candidate, dict):
+                overrides.update(candidate)
+        return overrides
+
+    def post_order_gold_deduction(self, completed: int) -> int:
+        """Return any cumulative post-settlement deduction for mainline orders."""
+        amount = 0
+        for threshold, rule in self.catalog.progression.get("difficulty", {}).items():
+            if self.s.difficulty < int(threshold):
+                continue
+            spec = rule.get("post_order_gold_deduction")
+            if isinstance(spec, dict) and completed >= int(spec.get("from_completed", 0)):
+                amount = max(amount, int(spec.get("amount", 0)))
+        return max(0, amount)
+
+    def _check_peace_goal(self) -> bool:
+        if not self.s.peace_mode or self.s.gold < PEACE_MODE_TARGET:
+            return False
+        self.s.status = "won"
+        self.s.pending.clear()
+        self.s.last_log.append("和平模式已达到1000000g：本局胜利。")
+        return True
 
     @staticmethod
     def next_endless_target(target: int) -> int:
@@ -223,7 +267,7 @@ class GameEngine:
         """Whether the just-completed order is the final normal-line order."""
         if completed < 12:
             return False
-        # D10's declarative 1350g/15-spin order is completed at order 13.
+        # D10+ use a declarative 15-spin final order, completed at order 13.
         return self._final_order_for(completed, difficulty) is None
 
     def rarity_table(self, kind: str) -> list[float]:
@@ -247,6 +291,9 @@ class GameEngine:
 
     def current_rarity_multiplier(self) -> float:
         multiplier = float(self.s.rarity_multiplier)
+        for threshold, rule in self.catalog.progression.get("difficulty", {}).items():
+            if self.s.difficulty >= int(threshold):
+                multiplier *= float(rule.get("rarity_weight_multiplier", 1.0))
         disable_negative = self.negative_disabled()
         for instance in self.s.ingredients:
             definition = self.catalog.ingredients[instance.def_id]
@@ -636,6 +683,7 @@ class GameEngine:
         values: list[int] = []
         for i, instance in enumerate(self._board):
             definition = self.catalog.ingredients[instance.def_id]
+            difficulty_override = self.difficulty_ingredient_override(instance.def_id)
             value = int(definition.get("base", 0)) + instance.permanent_bonus + self._item_bonus(definition)
             spec = definition.get("value", {})
             neighbors = [self._board[n] for n in self._neighbors(i)]
@@ -667,6 +715,8 @@ class GameEngine:
                     self.s.flags["coin_force_success"] = True
             if spec.get("chance_zero") and not self.negative_disabled() and self._chance(float(spec["chance_zero"]), negative=True):
                 value = 0
+            if "force_value" in difficulty_override:
+                value = int(difficulty_override["force_value"])
             values.append(value)
             if "cat" in tags and value > int(definition.get("base", 0)):
                 self.emit("cat_bonus")
@@ -854,6 +904,7 @@ class GameEngine:
             self.emit("order_book_used")
         self.s.gold += income
         self.s.stats["last_income"] = income
+        self._check_peace_goal()
         round_gold = max(0, int(self.s.gold - gold_at_spin_start))
         self.s.stats["last_round_gold"] = round_gold
         self.s.stats["highest_single_turn_gold"] = max(
@@ -975,7 +1026,13 @@ class GameEngine:
             if transform_after and inst.age >= int(transform_after["spins"]):
                 if not self._prevent_countdown(i, inst):
                     self._transform(inst, transform_after["into"])
-            if definition.get("remove_after") and inst.age >= int(definition["remove_after"]):
+            if definition.get("remove_after"):
+                remove_after = int(definition["remove_after"]) + int(
+                    self.difficulty_ingredient_override(inst.def_id).get("remove_after_bonus", 0)
+                )
+            else:
+                remove_after = 0
+            if remove_after and inst.age >= remove_after:
                 if not self._prevent_countdown(i, inst):
                     self._remove(inst, "expired", i)
 
@@ -1517,8 +1574,15 @@ class GameEngine:
             self.s.status = "lost"; self.s.last_log.append(f"订单失败：需要{amount}g，当前只有{self.s.gold}g。")
             return
         self.s.gold -= amount
-        completed = self.s.order_index + 1
-        self.s.order_index = completed
+        in_endless = bool(self.s.endless_mode)
+        in_peace = bool(self.s.peace_mode)
+        if in_peace:
+            # Mainline progress remains anchored at the final order while
+            # peace orders are tracked independently.
+            completed = self.s.order_index + self.s.peace_order + 1
+        else:
+            completed = self.s.order_index + 1
+            self.s.order_index = completed
         self.s.stats["last_completed_order_amount"] = amount
         self.emit("order_completed", value=amount)
         for item_id in list(self.s.items):
@@ -1540,6 +1604,16 @@ class GameEngine:
         token_amounts = self.token_reward_amounts(self.s.difficulty)
         if completed >= 4 and completed % 2 == 0:
             for token, token_amount in token_amounts.items(): self._gain_token(token, token_amount, "订单周期奖励")
+        if in_peace:
+            self.s.peace_order += 1
+        elif not in_endless:
+            deduction = self.post_order_gold_deduction(completed)
+            if deduction:
+                actual = min(max(0, int(self.s.gold)), deduction)
+                self.s.gold -= actual
+                self.s.last_log.append(f"难度规则：订单结算后额外扣除{actual}g。")
+        if self._check_peace_goal():
+            return
         self.s.pending.extend(self._order_rewards(completed))
         essence_tokens = int(self.s.tokens.get("essence", 0))
         self.s.tokens["essence"] = 0
@@ -1551,16 +1625,22 @@ class GameEngine:
             self.s.last_log.append(
                 f"完成无限订单{self.s.endless_order - 1}，支付{amount}g；下一份无限订单需要{self.s.endless_target}g。"
             )
+        elif self.s.peace_mode:
+            self.s.flags.pop("next_order_penalty", None)
+            self.s.spins_left = 7
+            self.s.last_log.append(
+                f"完成和平订单{self.s.peace_order}，下一份和平订单仍为0g/7回合。"
+            )
         elif self._mainline_complete(completed, self.s.difficulty):
             self.s.pending.append(
                 PendingChoice(
                     kind="run_end",
-                    offers=["end_run", "enter_endless"],
+                    offers=["end_run", "enter_endless", "enter_peace"],
                     can_skip=False,
                     source="mainline_complete",
                 )
             )
-            self.s.last_log.append("主线订单已完成：请选择结束本局或进入无限模式。")
+            self.s.last_log.append("主线订单已完成：请选择结束本局、进入无限模式或进入和平模式。")
         elif self.s.status == "won":
             self.s.last_log.append(f"已完成第{completed}份订单：本局胜利。仍可查看状态与库存。")
         else:
@@ -1588,8 +1668,25 @@ class GameEngine:
             self.s.status = "won"
             self.s.last_log.append("已完成主线订单：本局胜利。")
             return
+        if selected == "enter_peace":
+            self.s.peace_mode = True
+            self.s.peace_order = 0
+            self.s.endless_mode = False
+            self.s.endless_order = 0
+            self.s.endless_target = 0
+            self.s.spins_left = 7
+            self.s.flags.pop("next_order_penalty", None)
+            self.s.last_log.append("已进入和平模式：和平订单为0g/7回合，达到1000000g时胜利。")
+            # A run may already hold the peace-mode target when the player
+            # enters the mode (for example after a high-value final order).
+            # Apply the same goal check immediately so the terminal state is
+            # not delayed until an otherwise unnecessary spin.
+            self._check_peace_goal()
+            return
         if selected != "enter_endless":
             raise GameError("无效的结算模式选择")
+        self.s.peace_mode = False
+        self.s.peace_order = 0
         self.s.endless_mode = True
         self.s.endless_order = 1
         self.s.endless_target = 1000
@@ -1905,6 +2002,9 @@ class GameEngine:
             "endless_mode": bool(self.s.endless_mode),
             "endless_order": int(self.s.endless_order),
             "endless_target": int(self.s.endless_target),
+            "peace_mode": bool(self.s.peace_mode),
+            "peace_order": int(self.s.peace_order),
+            "peace_target": PEACE_MODE_TARGET,
             "highest_endless_order": int(self.s.stats.get("highest_endless_order", 0)),
             "endless_orders_completed": int(self.s.stats.get("endless_orders_completed", 0)),
             "highest_endless_single_turn_gold": int(self.s.stats.get("highest_endless_single_turn_gold", 0)),
@@ -2063,6 +2163,9 @@ class GameEngine:
                     "endless_mode": bool(state.endless_mode),
                     "endless_order": int(state.endless_order),
                     "endless_target": int(state.endless_target),
+                    "peace_mode": bool(state.peace_mode),
+                    "peace_order": int(state.peace_order),
+                    "peace_target": PEACE_MODE_TARGET,
                 },
                 "ingredients": ingredients,
                 "items_detail": items,

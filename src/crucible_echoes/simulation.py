@@ -1271,7 +1271,7 @@ def validate_simulation_state(engine: GameEngine) -> list[str]:
     errors: list[str] = []
     if state.gold < 0:
         errors.append("gold<0")
-    if not 1 <= state.difficulty <= 10:
+    if not 1 <= state.difficulty <= 15:
         errors.append("difficulty_out_of_range")
     if state.order_index < 0 or (not state.endless_mode and state.order_index > 13):
         errors.append("order_index_out_of_range")
@@ -1350,6 +1350,8 @@ def _final_attributes(engine: GameEngine, max_pool_size: int | None = None) -> d
         "endless_mode": bool(state.endless_mode),
         "endless_order": int(state.endless_order),
         "endless_target": int(state.endless_target),
+        "peace_mode": bool(state.peace_mode),
+        "peace_order": int(state.peace_order),
         "endless_orders_completed": int(state.stats.get("endless_orders_completed", 0)),
         "highest_endless_order": int(state.stats.get("highest_endless_order", 0)),
         "highest_endless_single_turn_gold": int(state.stats.get("highest_endless_single_turn_gold", 0)),
@@ -1744,7 +1746,7 @@ def simulate_game(
                     "income": int(engine.s.stats.get("last_income", 0)),
                     "build_state": build_state(),
                 })
-                if difficulty == 10 and order_before_spin >= 12:
+                if difficulty >= 10 and order_before_spin >= 12:
                     strategy_events["final_order_curve"].append({
                         "order_index": order_before_spin,
                         "target": int(order_amount_before_spin),
@@ -2180,7 +2182,7 @@ class BatchAccumulator:
             for record in self.records
             if record.death_reason is not None
         )
-        max_order = 13 if difficulty == 10 else 12
+        max_order = 13 if difficulty >= 10 else 12
         order_progression = []
         for order in range(1, max_order + 1):
             reached = self.order_reached[order]
@@ -2675,8 +2677,8 @@ def run_difficulty_sweep(
 ) -> DifficultySweepReport:
     if not games_by_difficulty:
         raise ValueError("至少需要一个难度")
-    if any(not 1 <= difficulty <= 10 for difficulty in games_by_difficulty):
-        raise ValueError("难度必须在1到10之间")
+    if any(not 1 <= difficulty <= 15 for difficulty in games_by_difficulty):
+        raise ValueError("难度必须在1到15之间")
     if any(games < 1 for games in games_by_difficulty.values()):
         raise ValueError("每个难度的模拟局数必须至少为1")
     reports: dict[int, SimulationReport] = {}

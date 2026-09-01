@@ -157,7 +157,7 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertEqual(20, catalog.ingredients["nested_chest"]["on_removed"]["gold"])
         self.assertIn("20g", catalog.ingredients["nested_chest"]["description"])
         self.assertEqual(7, catalog.items["animal_registry"].get("first_animal_gold", 7))
-        self.assertEqual(10, catalog.items["impossible_container"].get("per_spin_cap", 10))
+        self.assertEqual(8, catalog.items["impossible_container"].get("per_spin_cap", 8))
         self.assertEqual([1, 1, 2, 2], catalog.items["large_reactor"]["on_acquire"]["fixed_ingredient_choices"])
         self.assertEqual(0.30, 0.30 if "30%" in catalog.ingredients["paper"]["description"] else 0.0)
         self.assertEqual({"minimum": 3, "count": 2}, catalog.ingredients["lucky_potion"]["potion"]["choice_minimum"])
@@ -251,7 +251,7 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertEqual(1, engine.s.stats["event_counts"]["removed_ids:ash,rust,alchemy_scrap"])
 
     def test_impossible_container_starts_after_pool_exceeds_thirty(self) -> None:
-        for count, expected in ((30, 0), (31, 1), (40, 10), (50, 10), (60, 10)):
+        for count, expected in ((30, 0), (31, 1), (38, 8), (40, 8), (50, 8)):
             engine = self.fresh()
             engine.s.items.append("impossible_container")
             for _ in range(count):

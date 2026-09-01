@@ -116,6 +116,6 @@
   {"id":"essence_stabilizer","name":"精粹稳定剂","rarity":4,"description":"精粹第一次满足条件时触发但不移除，第二次再触发并移除。","essence_uses":2},
   {"id":"global_reaction_field","name":"全域反应场","rarity":4,"description":"每3回合所有成分视为彼此相邻。","all_adjacent_every":3},
   {"id":"equivalent_exchange","name":"等价交换法则","rarity":4,"description":"每回合第一次移除时，同稀有度随机成分永久获得被移除者基础价值。","script":"equivalent_exchange"},
-  {"id":"impossible_container","name":"不可能容器","rarity":4,"description":"池超过30时每多1个每回合+1g，上限10g。","script":"impossible_container","per_spin_cap":10},
+  {"id":"impossible_container","name":"不可能容器","rarity":4,"description":"池超过30时每多1个每回合+1g，上限8g。","script":"impossible_container","per_spin_cap":8},
   {"id":"time_rift","name":"时间裂缝","rarity":4,"description":"周期效果到终点时25%回到只差1回合状态。","time_rift_chance":0.25}
 ]
