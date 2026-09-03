@@ -702,7 +702,7 @@ def run_diagnostics(*, before_json: Path, after_json: Path, output_dir: Path, se
             "issue": "paper script could raise NameError when its growth check executed",
             "cause": "the script branch referenced an undefined ingredient definition",
             "fix": "resolve the current ingredient definition once at _run_script entry",
-            "regression_test": "test_paper_uses_thirty_percent_growth_chance",
+            "regression_test": "test_paper_uses_forty_two_percent_growth_chance",
         }],
     }
     _write("balance_executive_summary", executive, "# 平衡诊断执行摘要\n\n" + json.dumps(executive, ensure_ascii=False, indent=2) + "\n", output_dir)

@@ -40,14 +40,14 @@
     "4": {"token_reward": {"remove": 1, "roll": 1}},
     "5": {"initial_slag": 1},
     "6": {"order_bonus": {"10": 25}, "initial_slag": 2},
-    "7": {"order_bonus": {"11": 25}, "slag_interval": 20},
-    "8": {"initial_slag": 3, "slag_interval": 20},
-    "9": {"order_bonus": {"9": 25}, "slag_interval": 20},
-    "10": {"token_reward": {"essence": 1}, "final_order": {"after_completed": 12, "amount": 1350, "spins": 15}},
+    "7": {"order_bonus": {"11": 25}, "slag_interval": 33},
+    "8": {"initial_slag": 3},
+    "9": {"order_bonus": {"9": 25}},
+    "10": {"final_order": {"after_completed": 12, "amount": 1350, "spins": 15}},
     "11": {"final_order": {"after_completed": 12, "amount": 1425, "spins": 15}},
-    "12": {"ingredient_overrides": {"slag": {"force_value": 0, "remove_after_bonus": 2}}},
-    "13": {"order_bonus": {"12": 23}, "rarity_weight_multiplier": 0.95},
+    "12": {"ingredient_overrides": {"slag": {"force_value": 0, "remove_after_bonus": 2}}, "slag_interval": 27},
+    "13": {"order_bonus": {"12": 23}, "slag_interval": 20},
     "14": {"final_order": {"after_completed": 12, "amount": 1500, "spins": 15}},
-    "15": {"post_order_gold_deduction": {"from_completed": 4, "amount": 7}}
+    "15": {"token_reward": {"essence": 1}, "post_order_gold_deduction": {"from_completed": 4, "amount": 5}}
   }
 }

@@ -53,7 +53,7 @@
   {"id":"magic_notes","name":"魔法笔记","rarity":2,"description":"所有魔法+1g。","bonuses":[{"tag":"magic","amount":1}]},
   {"id":"advanced_miner_lamp","name":"高级矿工灯","rarity":2,"description":"所有石头、矿和金属+1g。","bonuses":[{"tags":["stone","ore","metal"],"amount":1}]},
   {"id":"ore_sorting_table","name":"选矿台","rarity":2,"description":"所有生成的矿物至少为2级。","spawn_minimum_rarity":[{"tags":["stone","ore","metal"],"minimum":2}]},
-  {"id":"tool_belt","name":"工具腰带","rarity":3,"description":"所有器材+1g。","bonuses":[{"tag":"equipment","amount":1}]},
+  {"id":"tool_belt","name":"工具腰带","rarity":4,"description":"所有器材+1g。","bonuses":[{"tag":"equipment","amount":1}]},
   {"id":"animal_feed","name":"动物饲料","rarity":2,"description":"所有动物+1g。","bonuses":[{"tag":"animal","amount":1}]},
   {"id":"garden_shears","name":"园艺剪","rarity":2,"description":"所有植物+1g。","bonuses":[{"tag":"plant","amount":1}]},
   {"id":"lucky_compass","name":"幸运罗盘","rarity":2,"description":"每次成分选择的一项稀有度权重×1.30。","script":"lucky_compass","candidate_rarity_weight":1.30},

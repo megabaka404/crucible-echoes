@@ -140,7 +140,7 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertEqual(1.15, catalog.items["lucky_charm"]["rarity_multiplier"])
         self.assertEqual(1.30, catalog.items["lucky_compass"]["candidate_rarity_weight"])
         self.assertEqual(4, catalog.items["double_ledger"]["rarity"])
-        self.assertEqual(3, catalog.items["tool_belt"]["rarity"])
+        self.assertEqual(4, catalog.items["tool_belt"]["rarity"])
         self.assertEqual(4, catalog.items["reagent_rack"]["rarity"])
         self.assertEqual(4, catalog.items["blue_reagent"]["round_condition"]["gold"])
         self.assertEqual(8, catalog.items["sorting_bin"]["event_bonus"]["removed_ids:ash,rust,alchemy_scrap"])
@@ -154,13 +154,14 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertIn("4g", catalog.items["small_safe"]["description"])
         self.assertEqual(3, catalog.ingredients["magic_magic"]["base"])
         self.assertEqual(2, catalog.ingredients["proliferation_core"]["base"])
-        self.assertEqual(11, catalog.ingredients["mercenary"]["reward_gold"])
+        self.assertEqual(20, catalog.ingredients["mercenary"]["reward_gold"])
         self.assertEqual(10, catalog.ingredients["nested_chest"]["on_removed"]["gold"])
         self.assertIn("10g", catalog.ingredients["nested_chest"]["description"])
         self.assertEqual(7, catalog.items["animal_registry"].get("first_animal_gold", 7))
         self.assertEqual(8, catalog.items["impossible_container"].get("per_spin_cap", 8))
         self.assertEqual([1, 1, 2, 2], catalog.items["large_reactor"]["on_acquire"]["fixed_ingredient_choices"])
-        self.assertEqual(0.30, 0.30 if "30%" in catalog.ingredients["paper"]["description"] else 0.0)
+        self.assertEqual(0.42, catalog.ingredients["paper"]["growth_chance"])
+        self.assertIn("42%", catalog.ingredients["paper"]["description"])
         self.assertEqual({"minimum": 3, "count": 2}, catalog.ingredients["lucky_potion"]["potion"]["choice_minimum"])
 
     def test_reaction_echo_pays_once_for_positive_permanent_bonus(self) -> None:
@@ -215,7 +216,7 @@ class BalanceExtensionTests(unittest.TestCase):
         self.assertTrue(engine._remove(cat, "removed", None))
         self.assertEqual(6, engine.s.gold)
 
-    def test_mercenary_uses_data_driven_eleven_gold_reward(self) -> None:
+    def test_mercenary_uses_data_driven_twenty_gold_reward(self) -> None:
         engine = self.fresh()
         mercenary = engine.add_ingredient("mercenary", emit=False)
         monster = engine.add_ingredient("goblin", emit=False)
@@ -224,7 +225,7 @@ class BalanceExtensionTests(unittest.TestCase):
         engine._board = [mercenary, monster]
         engine._coords = [(0, 0), (0, 1)]
         engine._run_script(0, mercenary, "mercenary")
-        self.assertEqual(11, engine.s.gold)
+        self.assertEqual(20, engine.s.gold)
         self.assertNotIn(monster.uid, {item.uid for item in engine.s.ingredients})
 
     def test_nested_chest_pays_ten_when_removed(self) -> None:
@@ -307,7 +308,7 @@ class BalanceExtensionTests(unittest.TestCase):
         restored = GameEngine().bind(GameState.from_dict(engine.s.to_dict()))
         self.assertEqual(1, restored.s.flags["choice_minimum_count"])
 
-    def test_paper_uses_thirty_percent_growth_chance(self) -> None:
+    def test_paper_uses_forty_two_percent_growth_chance(self) -> None:
         engine = self.fresh()
         paper = engine.add_ingredient("paper", emit=False)
         engine._board = [paper]
@@ -315,7 +316,7 @@ class BalanceExtensionTests(unittest.TestCase):
         calls: list[float] = []
         engine._chance = lambda chance: calls.append(chance) or True
         engine._run_script(0, paper, "paper")
-        self.assertEqual([0.30], calls)
+        self.assertEqual([0.42], calls)
         self.assertEqual(1, paper.permanent_bonus)
         self.assertTrue(paper.flags["grown"])
 

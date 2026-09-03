@@ -31,7 +31,7 @@ class LatestContentTests(unittest.TestCase):
     def test_d7_order_bonus_is_single_existing_bonus_and_slag_interval_is_inherited(self) -> None:
         d7 = GameEngine(); d7.new_game(1, difficulty=7)
         self.assertEqual((700, 10), d7.current_order_for(10, 7, {}))
-        self.assertEqual(20, GameEngine.slag_interval(7))
+        self.assertEqual(33, GameEngine.slag_interval(7))
         d15 = GameEngine(); d15.new_game(1, difficulty=15)
         self.assertEqual((700, 10), d15.current_order_for(10, 15, {}))
         self.assertEqual(20, GameEngine.slag_interval(15))
@@ -203,12 +203,76 @@ class LatestContentTests(unittest.TestCase):
         self.assertEqual(10, manual.s.gold)
         self.assertEqual(1, len(manual.s.ingredients))
 
-    def test_scapegoat_reward_is_fifteen(self) -> None:
+    def test_scapegoat_reward_is_eighteen(self) -> None:
         engine = self.fresh()
         scapegoat, target = self.put_on_board(engine, "scapegoat", "water")
         self.assertFalse(engine._remove(target, "destroyed", 1))
         self.assertNotIn(scapegoat, engine.s.ingredients)
-        self.assertEqual(15, engine.s.gold)
+        self.assertEqual(18, engine.s.gold)
+
+    def test_updated_equipment_rewards_are_data_driven(self) -> None:
+        shovel = self.fresh()
+        shovel_source, grass = self.put_on_board(shovel, "shovel", "weed")
+        shovel._run_script(0, shovel_source, "shovel")
+        self.assertNotIn(grass, shovel.s.ingredients)
+        self.assertEqual(8, shovel.s.gold)
+
+        oil_lamp = self.fresh()
+        oil_source, oil = self.put_on_board(oil_lamp, "alcohol_lamp", "oil")
+        oil_lamp._run_script(0, oil_source, "alcohol_lamp")
+        self.assertNotIn(oil, oil_lamp.s.ingredients)
+        self.assertEqual(18, oil_lamp.s.gold)
+
+        alcohol_lamp = self.fresh()
+        alcohol_source, alcohol = self.put_on_board(alcohol_lamp, "alcohol_lamp", "alcohol")
+        alcohol_lamp._run_script(0, alcohol_source, "alcohol_lamp")
+        self.assertNotIn(alcohol, alcohol_lamp.s.ingredients)
+        self.assertEqual(40, alcohol_lamp.s.gold)
+
+        sandpaper_fuel = self.fresh()
+        lamp_source, sandpaper = self.put_on_board(sandpaper_fuel, "alcohol_lamp", "sandpaper")
+        sandpaper_fuel._run_script(0, lamp_source, "alcohol_lamp")
+        self.assertNotIn(sandpaper, sandpaper_fuel.s.ingredients)
+        self.assertEqual(18, sandpaper_fuel.s.gold)
+
+        paper_fuel = self.fresh()
+        lamp_source, paper = self.put_on_board(paper_fuel, "alcohol_lamp", "paper")
+        paper_fuel._run_script(0, lamp_source, "alcohol_lamp")
+        self.assertNotIn(paper, paper_fuel.s.ingredients)
+        self.assertEqual(18, paper_fuel.s.gold)
+
+        sandpaper = self.fresh()
+        sandpaper_source, metal = self.put_on_board(sandpaper, "sandpaper", "copper")
+        sandpaper._run_script(0, sandpaper_source, "sandpaper")
+        self.assertIn(sandpaper_source, sandpaper.s.ingredients)
+        self.assertEqual(0, sandpaper.s.gold)
+        self.assertEqual(1, metal.permanent_bonus)
+        self.assertEqual(1, sandpaper_source.flags["sandpaper_triggers"])
+
+        sandpaper._run_script(0, sandpaper_source, "sandpaper")
+        self.assertNotIn(sandpaper_source, sandpaper.s.ingredients)
+        self.assertEqual(0, sandpaper.s.gold)
+        self.assertEqual(2, metal.permanent_bonus)
+
+        strengthening = self.fresh()
+        elixir = strengthening.add_ingredient("strengthening_elixir", emit=False)
+        self.assertEqual(5, elixir.age)
+        self.assertEqual(5, elixir.counter)
+
+    def test_ordinary_egg_transforms_to_non_offerable_super_egg(self) -> None:
+        engine = self.fresh()
+        egg = engine.add_ingredient("egg", emit=False)
+        engine._board = [egg]
+        engine._coords = [(0, 0)]
+        chance_calls: list[float] = []
+        engine._chance = lambda chance: chance_calls.append(chance) or True
+        engine._run_active_effects()
+        self.assertEqual([0.01], chance_calls)
+        self.assertEqual("super_easter_egg", egg.def_id)
+        self.assertEqual(3, engine.catalog.ingredients[egg.def_id]["rarity"])
+        self.assertEqual(4, engine.catalog.ingredients[egg.def_id]["base"])
+        self.assertFalse(engine.catalog.ingredients[egg.def_id]["offerable"])
+        self.assertNotIn("super_easter_egg", engine.make_choice("ingredient").offers)
 
     def test_new_state_defaults_keep_old_saves_loadable(self) -> None:
         engine = self.fresh()

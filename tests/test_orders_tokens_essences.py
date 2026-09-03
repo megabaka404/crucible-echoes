@@ -23,7 +23,7 @@ class OrdersTokensEssencesTests(unittest.TestCase):
             self.assertEqual((amount, 15), engine.current_order_for(12, difficulty, {}))
         d13 = GameEngine(); d13.new_game(1, difficulty=13)
         self.assertEqual((800, 10), d13.current_order_for(11, 13, {}))
-        self.assertAlmostEqual(0.95, d13.current_rarity_multiplier())
+        self.assertAlmostEqual(1.0, d13.current_rarity_multiplier())
 
     def test_d12_slag_is_zero_value_and_lasts_two_extra_rounds(self) -> None:
         d12 = GameEngine(); d12.new_game(1, difficulty=12)
@@ -51,7 +51,7 @@ class OrdersTokensEssencesTests(unittest.TestCase):
         engine.s.ingredients.clear()
         engine.spin()
         self.assertEqual("playing", engine.s.status)
-        self.assertEqual(43, engine.s.gold)
+        self.assertEqual(45, engine.s.gold)
 
         exact = GameEngine(); exact.new_game(2, difficulty=15)
         exact.s.order_index = 3
@@ -66,20 +66,32 @@ class OrdersTokensEssencesTests(unittest.TestCase):
         for difficulty, count in ((1,0),(5,1),(6,2),(8,3),(10,3),(12,3),(15,3)):
             engine = GameEngine(); engine.new_game(1, difficulty)
             self.assertEqual(count, sum(x.def_id == "slag" for x in engine.s.ingredients))
-        self.assertEqual(20, GameEngine.slag_interval(7))
-        self.assertEqual(20, GameEngine.slag_interval(8))
-        self.assertEqual(20, GameEngine.slag_interval(10))
+        self.assertEqual(33, GameEngine.slag_interval(7))
+        self.assertEqual(33, GameEngine.slag_interval(8))
+        self.assertEqual(33, GameEngine.slag_interval(10))
+        self.assertEqual(27, GameEngine.slag_interval(12))
+        self.assertEqual(20, GameEngine.slag_interval(13))
+        self.assertEqual(20, GameEngine.slag_interval(15))
 
-    def test_d7_adds_periodic_slag_on_the_twentieth_spin(self) -> None:
+    def test_d7_adds_periodic_slag_on_the_thirty_third_spin(self) -> None:
         engine = GameEngine(); engine.new_game(1, difficulty=7)
-        engine.s.spin = 19
+        engine.s.spin = 32
         engine.s.spins_left = 2
         before = sum(x.def_id == "slag" for x in engine.s.ingredients)
         engine.spin()
         self.assertEqual(before + 1, sum(x.def_id == "slag" for x in engine.s.ingredients))
 
+    def test_d12_and_d13_use_their_overridden_slag_intervals(self) -> None:
+        for difficulty, interval in ((12, 27), (13, 20)):
+            engine = GameEngine(); engine.new_game(1, difficulty=difficulty)
+            engine.s.spin = interval - 1
+            engine.s.spins_left = 2
+            before = sum(x.def_id == "slag" for x in engine.s.ingredients)
+            engine.spin()
+            self.assertEqual(before + 1, sum(x.def_id == "slag" for x in engine.s.ingredients))
+
     def test_even_order_awards_tokens_with_cumulative_per_token_rules(self) -> None:
-        for difficulty, expected_remove, expected_roll, expected_essence in ((1,2,2,2),(4,1,1,2),(10,1,1,1)):
+        for difficulty, expected_remove, expected_roll, expected_essence in ((1,2,2,2),(4,1,1,2),(10,1,1,2),(15,1,1,1)):
             engine = GameEngine(); engine.new_game(1, difficulty)
             engine.s.order_index = 3
             engine.s.spins_left = 1

@@ -190,10 +190,23 @@ class GameEngine:
         return 0
 
     @staticmethod
-    def slag_interval(difficulty: int) -> int | None:
-        if difficulty >= 7:
-            return 20
-        return None
+    def slag_interval(difficulty: int, progression: dict[str, Any] | None = None) -> int | None:
+        """Resolve the cumulative periodic slag interval from difficulty data.
+
+        ``progression`` is optional to retain the small public helper used by
+        older callers/tests; normal engine execution passes its loaded
+        catalog so custom catalogs remain data-driven.
+        """
+        if progression is None:
+            progression = Catalog.load().progression
+        interval: int | None = None
+        for threshold, rule in progression.get("difficulty", {}).items():
+            if difficulty < int(threshold):
+                continue
+            if "slag_interval" in rule:
+                value = rule.get("slag_interval")
+                interval = None if value is None else max(1, int(value))
+        return interval
 
     def current_order_for(
         self,
@@ -644,7 +657,20 @@ class GameEngine:
                 self.s.acquired_once.append(def_id)
             self.s.last_log.append("工程图纸自动展开：实验台永久增加至21格。")
             return None
-        instance = IngredientInstance(uid=self.s.next_uid, def_id=def_id, permanent_bonus=permanent_bonus)
+        # A declarative initial counter lets time-based ingredients start with
+        # partial progress.  ``age`` is the progress used by legacy scripts,
+        # while ``counter`` is the generic periodic counter; seeding both
+        # keeps the two persisted views consistent for definitions that use
+        # either representation.  Definitions without the field retain the
+        # historical zero-based initialization.
+        initial_counter = int(definition.get("initial_counter", 0))
+        instance = IngredientInstance(
+            uid=self.s.next_uid,
+            def_id=def_id,
+            permanent_bonus=permanent_bonus,
+            age=initial_counter,
+            counter=initial_counter,
+        )
         self.s.next_uid += 1
         self.s.ingredients.append(instance)
         self._apply_generation_bonus_to_instance(instance)
@@ -1236,7 +1262,7 @@ class GameEngine:
             for i, inst in enumerate(self._board)
         ]
         self._decay_flags()
-        interval = self.slag_interval(self.s.difficulty)
+        interval = self.slag_interval(self.s.difficulty, self.catalog.progression)
         if interval and (self.s.endless_mode or self.s.order_index < 11) and self.s.spin % interval == 0:
             self.add_ingredient("slag")
             self.s.last_log.append("难度规则向成分池加入1个废渣。")
@@ -1481,15 +1507,25 @@ class GameEngine:
         if script == "kitten": self._consume_first(index, {"milk"}, 9)
         elif script == "key": self._consume_first(index, tags={"chest"}, opened=True)
         elif script == "alcohol_lamp":
-            if not self._consume_first(index, {"alcohol"}, 40): self._consume_first(index, {"oil"}, 15)
+            rewards = definition.get("consume_rewards", {})
+            alcohol_reward = int(rewards.get("alcohol", 40))
+            oil_reward = int(rewards.get("oil", 18))
+            if not self._consume_first(index, {"alcohol"}, alcohol_reward):
+                if not self._consume_first(index, {"oil"}, oil_reward):
+                    paper_reward = int(rewards.get("paper", 18))
+                    self._consume_first(index, {"sandpaper", "paper"}, paper_reward)
         elif script == "acetone": self._consume_first(index, {"water"}, 9)
         elif script == "growth_magic" and neighbors and self._chance(0.05): self._permanent_bonus(self._board[self.r.choice(neighbors)], 1)
-        elif script == "shovel": self._destroy_matching(index, tags={"grass"}, reward_each=7)
+        elif script == "shovel": self._destroy_matching(index, tags={"grass"}, reward_each=int(definition.get("destroy_reward_each", 7)))
         elif script == "pickaxe": self._pickaxe(index)
         elif script == "sandpaper":
             metals = [n for n in neighbors if self._has_tag(self._board[n], "metal")]
             if metals:
-                self._permanent_bonus(self._board[self.r.choice(metals)], 1); self._remove(inst, "used", index)
+                self._permanent_bonus(self._board[self.r.choice(metals)], 1)
+                trigger_count = int(inst.flags.get("sandpaper_triggers", 0)) + 1
+                inst.flags["sandpaper_triggers"] = trigger_count
+                if trigger_count >= int(definition.get("trigger_limit", 2)):
+                    self._remove(inst, "used", index)
         elif script == "flame": self._flame(index)
         elif script == "apprentice":
             for n in list(neighbors):
@@ -1504,7 +1540,7 @@ class GameEngine:
         elif script == "easter_egg" and self._chance(0.1):
             rarity = self.roll_rarity("ingredient")
             self._transform(inst, self._draw_definition("ingredient", rarity))
-        elif script == "paper" and not inst.flags.get("grown") and self._chance(float(definition.get("growth_chance", 0.30))):
+        elif script == "paper" and not inst.flags.get("grown") and self._chance(float(definition.get("growth_chance", 0.42))):
             self._permanent_bonus(inst, 1); inst.flags["grown"] = True
         elif script == "herb":
             herbs = [n for n in neighbors if self._board[n].def_id == "herb"]
