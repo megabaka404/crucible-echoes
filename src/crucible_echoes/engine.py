@@ -1363,8 +1363,25 @@ class GameEngine:
             self._run_script(i, inst, definition.get("script"))
             if not self._present(inst):
                 continue
+            # A legacy definition may provide one chance_transform mapping.
+            # Newer definitions can provide mutually-exclusive weighted
+            # chance_transforms, allowing one instance to have several
+            # alternative outcomes without performing multiple transforms in
+            # the same round.
             transform = definition.get("chance_transform")
-            if transform and self._chance(float(transform["chance"])):
+            transforms = definition.get("chance_transforms")
+            if transforms is not None:
+                options = [item for item in transforms if isinstance(item, dict)]
+                total_chance = sum(max(0.0, float(item.get("chance", 0.0))) for item in options)
+                if options and total_chance > 0 and self._chance(total_chance):
+                    pick = self.r.random() * total_chance
+                    cumulative = 0.0
+                    for option in options:
+                        cumulative += max(0.0, float(option.get("chance", 0.0)))
+                        if pick < cumulative:
+                            self._transform(inst, option["into"])
+                            break
+            elif transform and self._chance(float(transform["chance"])):
                 self._transform(inst, transform["into"])
             transform_after = definition.get("transform_after")
             if transform_after and inst.age >= int(transform_after["spins"]):
@@ -1522,6 +1539,9 @@ class GameEngine:
             metals = [n for n in neighbors if self._has_tag(self._board[n], "metal")]
             if metals:
                 self._permanent_bonus(self._board[self.r.choice(metals)], 1)
+                reward = int(definition.get("trigger_reward_gold", 0))
+                if reward:
+                    self._gain_gold(reward, definition["name"])
                 trigger_count = int(inst.flags.get("sandpaper_triggers", 0)) + 1
                 inst.flags["sandpaper_triggers"] = trigger_count
                 if trigger_count >= int(definition.get("trigger_limit", 2)):

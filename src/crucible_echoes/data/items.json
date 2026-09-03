@@ -114,7 +114,7 @@
   {"id":"treasury","name":"炼金国库","rarity":4,"description":"每回合获得4g。","per_spin_gold":4},
   {"id":"frozen_meal","name":"冰冻实验餐","rarity":4,"description":"每2回合额外获得一次成分选择。","periodic_choice":{"every":2,"kind":"ingredient","amount":1}},
   {"id":"auto_reroller","name":"自动重调机","rarity":4,"description":"每回合获得1个Roll Token。","per_spin_token":{"token":"roll","amount":1}},
-  {"id":"golden_lucky_core","name":"黄金幸运核心","rarity":4,"description":"稀有度倍率×3。","rarity_multiplier":3.0},
+  {"id":"golden_lucky_core","name":"黄金幸运核心","rarity":4,"description":"稀有度倍率×2.77。","rarity_multiplier":2.77},
   {"id":"advanced_credit_card","name":"高级实验信用卡","rarity":4,"description":"每7回合，下一次成分选择额外增加7个候选。","periodic_choice_bonus":{"every":7,"bonus":7}},
   {"id":"essence_stabilizer","name":"精粹稳定剂","rarity":4,"description":"精粹第一次满足条件时触发但不移除，第二次再触发并移除。","essence_uses":2},
   {"id":"global_reaction_field","name":"全域反应场","rarity":4,"description":"每3回合所有成分视为彼此相邻。","all_adjacent_every":3},

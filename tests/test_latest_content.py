@@ -245,13 +245,13 @@ class LatestContentTests(unittest.TestCase):
         sandpaper_source, metal = self.put_on_board(sandpaper, "sandpaper", "copper")
         sandpaper._run_script(0, sandpaper_source, "sandpaper")
         self.assertIn(sandpaper_source, sandpaper.s.ingredients)
-        self.assertEqual(0, sandpaper.s.gold)
+        self.assertEqual(4, sandpaper.s.gold)
         self.assertEqual(1, metal.permanent_bonus)
         self.assertEqual(1, sandpaper_source.flags["sandpaper_triggers"])
 
         sandpaper._run_script(0, sandpaper_source, "sandpaper")
         self.assertNotIn(sandpaper_source, sandpaper.s.ingredients)
-        self.assertEqual(0, sandpaper.s.gold)
+        self.assertEqual(8, sandpaper.s.gold)
         self.assertEqual(2, metal.permanent_bonus)
 
         strengthening = self.fresh()
@@ -259,20 +259,37 @@ class LatestContentTests(unittest.TestCase):
         self.assertEqual(5, elixir.age)
         self.assertEqual(5, elixir.counter)
 
-    def test_ordinary_egg_transforms_to_non_offerable_super_egg(self) -> None:
+    def test_ordinary_egg_keeps_original_transform_and_adds_super_egg_chance(self) -> None:
         engine = self.fresh()
         egg = engine.add_ingredient("egg", emit=False)
         engine._board = [egg]
         engine._coords = [(0, 0)]
+        self.assertEqual(
+            [
+                {"chance": 0.01, "into": "easter_egg"},
+                {"chance": 0.0177, "into": "super_easter_egg"},
+            ],
+            engine.catalog.ingredients["egg"]["chance_transforms"],
+        )
         chance_calls: list[float] = []
         engine._chance = lambda chance: chance_calls.append(chance) or True
+        engine.r.random = lambda: 0.5
         engine._run_active_effects()
-        self.assertEqual([0.01], chance_calls)
+        self.assertAlmostEqual(0.0277, chance_calls[0])
         self.assertEqual("super_easter_egg", egg.def_id)
         self.assertEqual(3, engine.catalog.ingredients[egg.def_id]["rarity"])
         self.assertEqual(4, engine.catalog.ingredients[egg.def_id]["base"])
         self.assertFalse(engine.catalog.ingredients[egg.def_id]["offerable"])
         self.assertNotIn("super_easter_egg", engine.make_choice("ingredient").offers)
+
+        original = self.fresh()
+        original_egg = original.add_ingredient("egg", emit=False)
+        original._board = [original_egg]
+        original._coords = [(0, 0)]
+        original._chance = lambda chance: True
+        original.r.random = lambda: 0.0
+        original._run_active_effects()
+        self.assertEqual("easter_egg", original_egg.def_id)
 
     def test_new_state_defaults_keep_old_saves_loadable(self) -> None:
         engine = self.fresh()

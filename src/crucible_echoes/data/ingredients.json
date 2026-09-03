@@ -21,7 +21,7 @@
   {"id":"stone","name":"石头","rarity":1,"base":1,"tags":["stone"],"description":"基础石材。"},
   {"id":"pickaxe","name":"稿子","rarity":1,"base":1,"tags":["equipment"],"description":"移除相邻石头，每个得10g并生成随机金属。","script":"pickaxe","ingredient_generation":true},
   {"id":"scrap_iron","name":"废铁","rarity":1,"base":1,"tags":["metal","waste"],"description":"基础金属废料。"},
-  {"id":"sandpaper","name":"砂纸","rarity":1,"base":1,"tags":["equipment"],"description":"相邻金属时使一个金属永久+1g；触发2次后自毁。","script":"sandpaper","trigger_limit":2},
+  {"id":"sandpaper","name":"砂纸","rarity":1,"base":1,"tags":["equipment"],"description":"相邻金属时使一个金属永久+1g并获得4g；触发2次后自毁。","script":"sandpaper","trigger_limit":2,"trigger_reward_gold":4},
   {"id":"flame","name":"火焰","rarity":1,"base":1,"tags":["fire"],"description":"燃烧木炭/木材并变灰烬，获得目标价值×10；燃烧酒精得50g。","script":"flame","ingredient_generation":true},
   {"id":"ash","name":"灰烬","rarity":1,"base":1,"tags":["waste"],"description":"10次后自动移除。","remove_after":10},
   {"id":"apprentice","name":"学徒","rarity":1,"base":1,"tags":["human"],"description":"相邻玻璃器材各有20%被打碎，获得其价值×7。","script":"apprentice"},
@@ -42,7 +42,7 @@
   {"id":"mercenary","name":"佣兵","rarity":1,"base":1,"tags":["human"],"description":"杀死相邻怪物后自毁，额外获得20g。","script":"mercenary","reward_gold":20},
   {"id":"nested_chest","name":"箱中箱","rarity":1,"base":1,"tags":["chest"],"description":"被移除时获得10g，并生成一个随机其他箱子。","on_removed":{"gold":10,"reason":"any","spawn_tag":"chest","exclude":["nested_chest"]},"ingredient_generation":true},
   {"id":"easter_egg","name":"彩蛋","rarity":1,"base":1,"tags":["egg"],"pool_weight":0.1,"description":"普通权重10%；每回合10%变成随机成分。","script":"easter_egg"},
-  {"id":"egg","name":"普通的蛋","rarity":1,"base":1,"tags":["egg"],"description":"每回合1%变成超级彩蛋。","chance_transform":{"chance":0.01,"into":"super_easter_egg"}},
+  {"id":"egg","name":"普通的蛋","rarity":1,"base":1,"tags":["egg"],"description":"每回合1%变成彩蛋；另有1.77%概率变成超级彩蛋。","chance_transforms":[{"chance":0.01,"into":"easter_egg"},{"chance":0.0177,"into":"super_easter_egg"}]},
   {"id":"super_easter_egg","name":"超级彩蛋","rarity":3,"base":4,"tags":["egg"],"description":"不可在成分选择中出现的特殊彩蛋。","offerable":false},
   {"id":"coin","name":"硬币","rarity":1,"base":0,"tags":["coin"],"description":"50%获得3g，50%为0g。","value":{"coin_flip":3}},
 

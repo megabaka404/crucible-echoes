@@ -288,10 +288,17 @@ class HeuristicStrategy(SimulationStrategy):
                 else transform_after
             )
             value += 2.5 * max(0.0, (horizon - float(transform_spins)) / horizon)
-        if row.get("chance_transform"):
-            chance_transform = row["chance_transform"]
-            if isinstance(chance_transform, dict):
-                value += float(chance_transform.get("chance", 0.0)) * 8.0
+        chance_transforms = row.get("chance_transforms")
+        if chance_transforms is None:
+            chance_transforms = row.get("chance_transform")
+        if isinstance(chance_transforms, dict):
+            chance_transforms = [chance_transforms]
+        if isinstance(chance_transforms, list):
+            value += sum(
+                max(0.0, float(transform.get("chance", 0.0)))
+                for transform in chance_transforms
+                if isinstance(transform, dict)
+            ) * 8.0
         if row.get("chance_spawn"):
             chance_spawn = row["chance_spawn"]
             if isinstance(chance_spawn, dict):
@@ -784,7 +791,10 @@ class HeuristicV3Strategy(HeuristicV2Strategy):
                 strength += 3.0
             if target.get("remove_after") or target.get("transform_after"):
                 strength += 2.0
-            if target.get("chance_transform"):
+            target_transforms = target.get("chance_transforms")
+            if target_transforms is None:
+                target_transforms = target.get("chance_transform")
+            if target_transforms:
                 strength += 1.5
 
         # Existing ingredient mechanics that explicitly consume/count or
@@ -801,10 +811,16 @@ class HeuristicV3Strategy(HeuristicV2Strategy):
                     strength += 2.5
                 if target_ids.intersection(str(x) for x in value.get("count_ids", []) or []):
                     strength += 2.5
-            for transform_field in ("transform_after", "chance_transform"):
+            for transform_field in ("transform_after", "chance_transform", "chance_transforms"):
                 transform = current.get(transform_field)
-                if isinstance(transform, dict) and str(transform.get("into")) in target_ids:
-                    strength += 2.0
+                transforms = [transform] if isinstance(transform, dict) else transform
+                if isinstance(transforms, list):
+                    if any(
+                        isinstance(option, dict)
+                        and str(option.get("into")) in target_ids
+                        for option in transforms
+                    ):
+                        strength += 2.0
             aura = current.get("aura")
             if isinstance(aura, dict) and (
                 aura.get("tag") in target_tags

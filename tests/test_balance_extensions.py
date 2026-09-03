@@ -136,7 +136,7 @@ class BalanceExtensionTests(unittest.TestCase):
             {"every": 2, "amount": 3},
             catalog.items["brown_reagent"]["event_bonus_every"]["ingredient_added"],
         )
-        self.assertEqual(3.0, catalog.items["golden_lucky_core"]["rarity_multiplier"])
+        self.assertEqual(2.77, catalog.items["golden_lucky_core"]["rarity_multiplier"])
         self.assertEqual(1.15, catalog.items["lucky_charm"]["rarity_multiplier"])
         self.assertEqual(1.30, catalog.items["lucky_compass"]["candidate_rarity_weight"])
         self.assertEqual(4, catalog.items["double_ledger"]["rarity"])
