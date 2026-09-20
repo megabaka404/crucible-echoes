@@ -778,6 +778,10 @@ class GameEngine:
                 if crossed and bonus_amount:
                     self._gain_gold(crossed * bonus_amount, item["name"])
                     self._record_item_trigger(item_id, crossed)
+                choice_extra = int(every_bonus.get("choice_extra", 0))
+                if crossed and choice_extra:
+                    self.s.flags["ingredient_choice_extra"] = int(self.s.flags.get("ingredient_choice_extra", 0)) + crossed * choice_extra
+                    self._record_item_trigger(item_id, crossed)
                 if crossed:
                     for token, token_amount in every_bonus.get("tokens", {}).items():
                         self._gain_token(token, crossed * int(token_amount), item["name"])
@@ -1517,11 +1521,30 @@ class GameEngine:
             inst.counter = every - 1
 
     def _run_script(self, index: int, inst: IngredientInstance, script: str | None) -> None:
-        if not script:
-            return
         definition = self.catalog.ingredients.get(inst.def_id, {})
         neighbors = [n for n in self._neighbors(index) if n < len(self._board) and self._present(self._board[n])]
+        self_growth = definition.get("periodic_permanent_bonus")
+        if self_growth and inst.age > 0 and inst.age % max(1, int(self_growth.get("every", 1))) == 0:
+            self._permanent_bonus(inst, int(self_growth.get("amount", 1)))
+        adjacent_growth = definition.get("periodic_adjacent_permanent_growth")
+        if adjacent_growth and inst.age > 0 and inst.age % max(1, int(adjacent_growth.get("every", 1))) == 0:
+            targets = [n for n in neighbors if self._has_tag(self._board[n], str(adjacent_growth["tag"]))]
+            selected = self.r.sample(targets, min(len(targets), max(0, int(adjacent_growth.get("targets", 1)))))
+            for target_index in selected:
+                self._permanent_bonus(self._board[target_index], int(adjacent_growth.get("amount", 1)))
+        board_gold = definition.get("board_presence_gold")
+        if board_gold:
+            present_ids = {x.def_id for x in self._board if self._present(x)}
+            if set(board_gold.get("ids", [])).issubset(present_ids):
+                self._gain_gold(int(board_gold.get("gold", 0)), definition["name"])
+        if not script:
+            return
         if script == "kitten": self._consume_first(index, {"milk"}, 9)
+        elif script == "crow":
+            for target_index in list(neighbors):
+                target = self._board[target_index]
+                if target.def_id == "coin" and self._remove(target, "consumed", target_index):
+                    self._gain_gold(9, definition["name"])
         elif script == "key": self._consume_first(index, tags={"chest"}, opened=True)
         elif script == "alcohol_lamp":
             rewards = definition.get("consume_rewards", {})
@@ -1941,7 +1964,8 @@ class GameEngine:
         if payout_multiplier > 1 and board_index is not None and board_index < len(self._values): payout += self._values[board_index] * payout_multiplier
         if inst.stored_gold: payout += inst.stored_gold
         on_removed = definition.get("on_removed", {})
-        if on_removed and on_removed.get("reason") in {"any", reason}:
+        on_removed_matches = bool(on_removed and on_removed.get("reason") in {"any", reason})
+        if on_removed_matches:
             payout += int(on_removed.get("gold", 0)) * payout_multiplier
         self.s.ingredients = [x for x in self.s.ingredients if x.uid != inst.uid]
         self.s.removed_history.append(inst.def_id)
@@ -1953,6 +1977,9 @@ class GameEngine:
         if reason == "shattered": self.emit("shattered")
         if reason == "burned": self.emit("burned")
         if reason == "potion": self.emit("potion")
+        if on_removed_matches:
+            for token, amount in on_removed.get("tokens", {}).items():
+                self._gain_token(str(token), int(amount), definition["name"])
         if inst.def_id in {"ash", "rust", "alchemy_scrap"}:
             self.emit("removed_ids:ash,rust,alchemy_scrap")
         if board_index is not None:
@@ -2454,6 +2481,13 @@ class GameEngine:
         if "event_count" in trigger:
             spec=trigger["event_count"]; event=spec["event"]
             if int(totals.get(event,0))-int(baseline.get("events",{}).get(event,0)) < int(spec["count"]): return False
+        if "event_count_sum" in trigger:
+            spec = trigger["event_count_sum"]
+            total = sum(
+                int(totals.get(event, 0)) - int(baseline.get("events", {}).get(event, 0))
+                for event in spec.get("events", [])
+            )
+            if total < int(spec["count"]): return False
         if "event_count_round" in trigger:
             spec=trigger["event_count_round"]
             # A newly acquired essence starts counting from the current
@@ -2471,6 +2505,9 @@ class GameEngine:
         if "board_tag_count" in trigger:
             spec=trigger["board_tag_count"]
             if sum(1 for d in board_defs if spec["tag"] in d.get("tags",[])) < int(spec["count"]): return False
+        if "board_has_all_ids" in trigger:
+            present_ids = {definition["id"] for definition in board_defs}
+            if not set(trigger["board_has_all_ids"]).issubset(present_ids): return False
         if "board_filter_count" in trigger:
             spec=trigger["board_filter_count"]; tags=set(spec.get("tags",[]))
             found=sum(1 for d in board_defs if (not tags or tags.intersection(d.get("tags",[]))) and (not spec.get("rarity") or int(d.get("rarity",0))==int(spec["rarity"])))
@@ -2544,7 +2581,7 @@ class GameEngine:
                     global_bonuses[target_id] = int(global_bonuses.get(target_id, 0)) + int(spec.get("amount", 0))
             for inst in self.s.ingredients:
                 definition=self.catalog.ingredients[inst.def_id]; tags=set(definition.get("tags",[]))
-                matches = bool(target_ids and definition["id"] in target_ids) or spec.get("tag") in tags or bool(tags.intersection(spec.get("tags",[]))) or ("base" in spec and int(definition.get("base",0))==int(spec["base"]))
+                matches = bool(target_ids and definition["id"] in target_ids) or definition["id"] in spec.get("ids", []) or spec.get("tag") in tags or bool(tags.intersection(spec.get("tags",[]))) or ("base" in spec and int(definition.get("base",0))==int(spec["base"]))
                 if spec.get("rarity") and int(definition.get("rarity",0))!=int(spec["rarity"]): matches=False
                 if matches and not spec.get("persistent"):
                     self._permanent_bonus(inst, int(spec["amount"]))
