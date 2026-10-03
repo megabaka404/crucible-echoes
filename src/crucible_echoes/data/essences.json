@@ -104,8 +104,8 @@
   {"id":"vault_essence","item_id":"vault","name":"金库精粹","description":"累计旋转5次后获得50g。","trigger":{"spins":5},"effect":{"gold":50}},
 
   {"id":"treasury_essence","item_id":"treasury","name":"炼金国库精粹","description":"累计旋转5次后获得80g。","trigger":{"spins":5},"effect":{"gold":80}},
-  {"id":"frozen_meal_essence","item_id":"frozen_meal","name":"冰冻实验餐精粹","description":"连续2回合没有跳过选择后，接下来3回合各多一次成分选择。","trigger":{"event_count":{"event":"ingredient_chosen","count":2}},"effect":{"flag":{"extra_choice_spins":3}}},
-  {"id":"auto_reroller_essence","item_id":"auto_reroller","name":"自动重调机精粹","description":"同一选择使用2个Roll Token后获得5个Roll Token。","trigger":{"event_count_round":{"event":"reroll","count":2}},"effect":{"tokens":{"roll":5}}},
+  {"id":"frozen_meal_essence","item_id":"frozen_meal","name":"冰冻实验餐精粹","description":"连续2回合没有跳过选择后，接下来3回合各多一次成分选择。","trigger":{"consecutive_choice_rounds":2},"effect":{"flag":{"extra_choice_spins":3}}},
+  {"id":"auto_reroller_essence","item_id":"auto_reroller","name":"自动重调机精粹","description":"同一选择使用2个Roll Token后获得5个Roll Token。","trigger":{"choice_event_count":{"event":"reroll","count":2}},"effect":{"tokens":{"roll":5}}},
   {"id":"golden_lucky_core_essence","item_id":"golden_lucky_core","name":"黄金幸运核心精粹","description":"一次选择同时出现3级和4级时，稀有度永久×1.5。","trigger":{"choice_contains_rarities":[3,4]},"effect":{"rarity_multiplier":1.5}},
   {"id":"advanced_credit_card_essence","item_id":"advanced_credit_card","name":"高级实验信用卡精粹","description":"一次选择至少8个候选时，下次成分选择额外10项。","trigger":{"choice_offers":8},"effect":{"flag":{"ingredient_choice_extra":10}}},
   {"id":"essence_stabilizer_essence","item_id":"essence_stabilizer","name":"精粹稳定剂精粹","description":"同时持有5个未触发精粹时，使随机3个视为完成一次条件。","trigger":{"essence_count":5},"effect":{"advance_random_essences":3}},

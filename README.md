@@ -1,8 +1,8 @@
 # 坩埚余响 · Crucible Echoes
 
-一个可复现、可存档、数据驱动的纯文字炼金构筑 roguelike。
+一个可复现、可存档、数据驱动的炼金构筑 roguelike，提供 Windows 桌面版、文字 CLI 与 LLM Agent 接口。
 
-你将在 4×5 实验台上扩充成分池，利用邻接、生成、移除和永久成长效果，在有限回合内完成逐渐提高的订单。游戏同时支持人类 CLI 和面向 LLM 的单步 Agent 接口。
+你将在 4×5 实验台上构筑成分池，利用邻接、生成、移除和永久成长效果，在有限回合内完成逐渐提高的订单。三个操作界面共用同一游戏核心。
 
 > 想让 AI 自己玩：把项目交给能运行终端的 AI，并告诉它：“请阅读 README，使用 `agent` 接口开一局，一直玩到胜利或失败。”
 
@@ -10,7 +10,7 @@
 
 ## 快速开始
 
-需要 Python 3.10+，无第三方依赖。
+CLI、Agent 与模拟需要 Python 3.10+，无第三方依赖；桌面版另需安装下面的可选依赖。
 
 ```powershell
 py -3 game.py new --seed 42 --difficulty 1
@@ -40,7 +40,40 @@ py -3 game.py new --seed 42 --difficulty 10 --fun-mode mutation
 
 娱乐模式不会改变标准 `none` 规则。
 
-默认存档为 `.saves/current.json`，可用 `--save path.json` 指定其他路径。
+## Windows 桌面版
+
+桌面版使用同一个 Python 游戏核心，`pywebview` 只负责窗口与 HTML/CSS/JavaScript 显示层。前端不自行计算规则：每次点击都由核心校验并返回一份完整 view state，因此 CLI、Agent 和桌面版会共享 RNG、存档和规则。
+
+安装并运行开发版：
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m desktop.app --save .saves/current.json
+```
+
+可以用真实窗口做一次自动 bridge smoke（完成新局、结束回合、选择候选后自动退出）：
+
+```powershell
+.\.venv\Scripts\python.exe -m desktop.app --smoke-test
+```
+
+也可以只使用项目声明的可选依赖：`py -3 -m pip install -e ".[desktop]"`。
+
+窗口中提供卡片与邻接高亮、池内删除、候选选择、预计结算、操作变化汇总、图鉴和可关闭的首次机制提示；底部操作栏常驻。Windows 桌面版默认将存档与日志保存在 `%LOCALAPPDATA%/CrucibleEchoes/saves/`，避免 EXE 启动目录不可写；首次启动会复制可找到的旧 `.saves/current.json`，保留原文件。显式 `--save` 路径、CLI 和 Agent 存档不变。
+
+构建不依赖 Python 的 Windows onedir 包（需要 Windows 与 PyInstaller）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File build/build_windows.ps1
+```
+
+构建后的 EXE 也支持同样的 `--smoke-test` 参数。
+
+产物为 `dist/CrucibleEchoes/CrucibleEchoes.exe` 及同目录资源，同时会生成可分发的 `dist/CrucibleEchoes-windows.zip`。目前项目保留 `--debug` 参数用于排查前端桥接问题；崩溃信息写入存档旁的 `crucible-echoes.log`。
+
+CLI / Agent 默认存档为 `.saves/current.json`，桌面版默认使用上述用户数据目录；均可用 `--save path.json` 指定其他路径。
 
 常用人类命令：
 
@@ -96,6 +129,9 @@ src/crucible_echoes/model.py   JSON 状态模型与序列化
 src/crucible_echoes/rng.py     可保存、可复现的随机数流
 src/crucible_echoes/simulation.py  批量模拟、策略和报告
 src/crucible_echoes/data/      成分、物品、精粹和规则数据
+desktop/                        pywebview 应用、桥接和桌面 view model
+frontend/                      HTML/CSS/JavaScript 桌面界面
+build/                         PyInstaller spec 与 Windows 构建脚本
 tests/                          自动测试
 docs/SPEC.md                    完整规则规格
 docs/AGENT_INTERFACE.md         Agent 协议
@@ -109,7 +145,45 @@ docs/AGENT_INTERFACE.md         Agent 协议
 py -3 run_tests.py
 ```
 
-测试覆盖 RNG 可复现、稀有度、邻接、生成/移除、永久成长、订单、Token、精粹、难度、Agent 状态接口和批量模拟。
+测试覆盖 RNG 可复现、稀有度、邻接、生成/移除、永久成长、订单、Token、精粹、难度、Agent 状态接口、桌面桥接和批量模拟。
+
+## 平衡分析（开发用）
+
+```powershell
+py -3 game.py simulate --games 300 --seed 20260923 --difficulty 7 --strategy heuristic-v2-content --summary-only
+```
+
+`heuristic-v2-content` 是新增的内容识别实验策略；旧 `heuristic-v2` 等策略仍可用于对照，默认策略没有改变。模拟胜率不能直接代表玩家胜率或卡牌真实强度。验证过程、改动边界与测试结果见 [优化记录](docs/BALANCE_OPTIMIZATION_20260921.md)。
+
+可选后继 `heuristic-v2-content-v2` 会结合真实联动和实例永久成长判断抓取/删除，修正部分魔药收益估值；旧策略继续保留。分块对照支持中断续跑：
+
+```powershell
+$env:PYTHONPATH = "src"
+py -3 -m crucible_echoes.strategy_benchmark --games 500 --seed 20261002 --difficulties 7 10 15 --output reports/policy_pair.json
+# 同一命令增加 --resume，复用已完成的分块。
+```
+
+工具保存源码/卡表快照，拒绝混合不同版本的结果。报告包含配对胜负、精确检验、池大小与每单条件死亡率；样本不足不判定优劣。成分/装备尚未完整采集触发次数，报告明确标注“未统计”，另有真实移除次数供自毁/消耗内容复核。
+
+`heuristic-v2-content-v3` 是独立的操作覆盖实验：会按构筑决定使用材料包、开关禁令、接受整组奖励，以及在到期订单前兑现可删除成分的储蓄。默认和旧策略不变；决策不消耗游戏RNG。可用同seed对照：
+
+另有可选 `heuristic-v2-content-v4`，补充每回合Token、事件奖励与订单储蓄估值。它依据历史触发率，可能不适用于刚改变体系的构筑；仍是实验策略，不替换默认，也不代表卡牌的真实强弱。
+
+报告另外核对净池变化：初始池 + 动作边界新增 − 移除 = 最终池；同实例身份转换不算扩池。动作内生成又消失不计入此口径，复制桶并非完整UID级来源追踪，旧报告缺字段表示未统计。
+
+```powershell
+py -3 -m crucible_echoes.strategy_benchmark --games 100 --seed 20261004 --difficulties 7 10 15 --baseline heuristic-v2-content-v2 --candidate heuristic-v2-content-v3 --output reports/action_pair.json
+```
+
+当前修复和对照边界见 [持续优化记录](docs/OPTIMIZATION_20261003.md)。
+
+诊断某种主动操作是否合理，可做策略操作消融（按效果字段，不修改卡牌能力）：
+
+```powershell
+py -3 -m tools.active_policy_ablation --field order_book --games 100 --seed 20261007 --difficulties 7 10 15 --output reports/order_book_ablation.json
+```
+
+实验工具拒绝覆盖旧报告；结果仍需检查样本量及随机路径分叉，不能当作卡牌改值依据。
 
 ## 贡献
 

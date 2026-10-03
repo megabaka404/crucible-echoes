@@ -12,6 +12,10 @@ license = "MIT"
 authors = [{name = "Crucible Echoes contributors"}]
 dependencies = []
 
+[project.optional-dependencies]
+desktop = ["pywebview>=5.0"]
+build = ["pyinstaller>=6.0"]
+
 [project.scripts]
 crucible-echoes = "crucible_echoes.cli:main"
 
@@ -21,4 +25,3 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 crucible_echoes = ["data/*.json"]
-

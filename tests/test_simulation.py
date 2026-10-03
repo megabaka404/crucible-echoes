@@ -324,8 +324,11 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(report.summary["losses"], sum(row["died"] for row in rows))
         for row in rows:
             self.assertLessEqual(row["died"], row["reached"])
-            self.assertGreaterEqual(row["conditional_death_rate"], 0.0)
-            self.assertLessEqual(row["conditional_death_rate"], 1.0)
+            if row["reached"]:
+                self.assertGreaterEqual(row["conditional_death_rate"], 0.0)
+                self.assertLessEqual(row["conditional_death_rate"], 1.0)
+            else:
+                self.assertIsNone(row["conditional_death_rate"])
             if row["average_gold_gap_at_death"] is not None:
                 self.assertGreaterEqual(row["average_gold_gap_at_death"], 0.0)
 

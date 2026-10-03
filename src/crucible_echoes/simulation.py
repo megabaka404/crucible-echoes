@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .catalog import Catalog
 from .engine import GameEngine, GameError
+from .generation_analysis import GENERATION_CLASSES, generation_classes
 from .model import GameState, PendingChoice
 
 
@@ -36,6 +37,13 @@ class SimulationStrategy:
         return False
 
     def removal_index(self, engine: GameEngine) -> int | None:
+        return None
+
+    def bundle_index(self, engine: GameEngine, choice: PendingChoice) -> int:
+        # Preserve historical baselines; opt-in successors can decline.
+        return 1
+
+    def pre_spin_action(self, engine: GameEngine) -> dict[str, Any] | None:
         return None
 
     def score_components(self, engine: GameEngine, kind: str, def_id: str) -> dict[str, float]:
@@ -573,6 +581,9 @@ class HeuristicV2Strategy(HeuristicStrategy):
 
     name = "heuristic-v2"
 
+    def _reject_ingredient(self, row: dict[str, Any]) -> bool:
+        return "waste" in row.get("tags", []) or not row.get("removable", True)
+
     def _generator_penalty(self, engine: GameEngine, row: dict[str, Any]) -> float:
         """Price an unconnected generator before it can win a choice.
 
@@ -648,7 +659,7 @@ class HeuristicV2Strategy(HeuristicStrategy):
         if choice.kind != "ingredient" or not choice.can_skip:
             return selected
         row = engine.catalog.ingredients[selected_id]
-        if ("waste" in row.get("tags", []) or not row.get("removable", True)):
+        if self._reject_ingredient(row):
             return None
         score = self._v2_score(engine, "ingredient", selected_id)
         future = self._long_term_ingredient_value(
@@ -1236,6 +1247,18 @@ class HeuristicV31Strategy(HeuristicV3Strategy):
 
 def strategy_from_name(name: str) -> SimulationStrategy:
     """Construct one of the built-in deterministic simulation strategies."""
+    if name == "heuristic-v2-content":
+        from .content_strategy import ContentAwareV2Strategy
+        return ContentAwareV2Strategy()
+    if name == "heuristic-v2-content-v2":
+        from .content_strategy import ContentAwareV2RevisionStrategy
+        return ContentAwareV2RevisionStrategy()
+    if name == "heuristic-v2-content-v3":
+        from .action_strategy import ContentActionStrategy
+        return ContentActionStrategy()
+    if name == "heuristic-v2-content-v4":
+        from .item_strategy import ItemEconomyStrategy
+        return ItemEconomyStrategy()
     strategies = {
         "heuristic-v1": HeuristicStrategy,
         "heuristic-v2": HeuristicV2Strategy,
@@ -1345,10 +1368,12 @@ def _failure_reason(state: GameState, status: str, error: str | None) -> str | N
 
 def _content_category(catalog: Catalog, kind: str, def_id: str) -> str | None:
     if kind == "item":
-        return "items"
+        return "items" if def_id in catalog.items else None
     if kind == "essence":
-        return "essences"
+        return "essences" if def_id in catalog.essences else None
     if kind == "ingredient":
+        if def_id not in catalog.ingredients:
+            return None
         if "equipment" in catalog.ingredients[def_id].get("tags", []):
             return "equipment"
         return "ingredients"
@@ -1363,6 +1388,7 @@ def _game_content_row() -> dict[str, int]:
         "final_owned_count": 0,
         "trigger_count": 0,
         "consumed_count": 0,
+        "removal_count": 0,
     }
 
 
@@ -1429,11 +1455,15 @@ def simulate_game(
     known_essences: Counter[str] = Counter()
     known_ingredient_uids: set[int] = set()
     strategy_events: dict[str, Any] = {
+        "offer_tracking": "candidate_slots_including_rerolls/v1",
+        "offer_exposures": [],
         "rolls": [],
         "deletes": [],
         "choices": [],
         "pool_curve": [],
         "pool_events": [],
+        "pool_removals": [],
+        "pool_flows": [],
         "order_outcomes": [],
         "final_order_curve": [],
     }
@@ -1441,6 +1471,11 @@ def simulate_game(
 
     for instance in engine.s.ingredients:
         instance.flags.setdefault("_sim_origin", "initial")
+    initial_pool_size = len(engine.s.ingredients)
+    last_pool_snapshot = {instance.uid: instance.def_id for instance in engine.s.ingredients}
+    last_pool_origins = {instance.uid: str(instance.flags.get("_sim_origin", "unknown"))
+                         for instance in engine.s.ingredients}
+    last_copied_total = int(engine.s.stats.get("event_counts", {}).get("copied", 0))
 
     def build_state() -> dict[str, Any]:
         method = getattr(policy, "build_state", None)
@@ -1453,9 +1488,33 @@ def simulate_game(
         selected_id: str | None = None,
         *,
         growth_source: str | None = None,
-        copied_count: int = 0,
+        copied_count: int | None = None,
+        tag_origins: bool = True,
     ) -> None:
+        nonlocal last_pool_snapshot, last_pool_origins, last_copied_total
         current = {instance.uid: instance for instance in engine.s.ingredients}
+        identities = {uid: instance.def_id for uid, instance in current.items()}
+        copied_total = int(engine.s.stats.get("event_counts", {}).get("copied", 0))
+        copies = max(0, copied_total - last_copied_total) if copied_count is None else copied_count
+        # Consume the event delta even if the copied entry left in this action.
+        # It must not leak into the next unrelated acquisition.
+        last_copied_total = copied_total
+        if identities == before:
+            return
+        removed_uids = before.keys() - current.keys()
+        for uid in sorted(removed_uids):
+            strategy_events["pool_removals"].append({
+                "uid": uid, "before_action_id": before[uid],
+                "origin": last_pool_origins.get(uid, "unknown"),
+                "action": action, "spin": engine.s.spin, "pool_size": len(current),
+            })
+        strategy_events["pool_flows"].append({
+            "action": action, "spin": engine.s.spin,
+            "before": len(before), "after": len(current),
+            "added": len(current.keys() - before.keys()), "removed": len(removed_uids),
+            "identity_changes": sum(uid in before and before[uid] != inst.def_id
+                                    for uid, inst in current.items()),
+        })
         generator_ids: set[str] = set()
         generator_tags: set[str] = set()
         for definition in engine.catalog.ingredients.values():
@@ -1483,11 +1542,12 @@ def simulate_game(
         # engine.  It is sufficient for the requested source totals: reserve
         # that many newly-added instances for the copy bucket, while the
         # remaining additions retain their normal source classification.
-        copy_remaining = max(0, min(int(copied_count), len(new_instances)))
+        copy_remaining = max(0, min(int(copies), len(new_instances)))
         for uid, instance in current.items():
             previous_id = before.get(uid)
             if previous_id is not None and previous_id != instance.def_id:
-                instance.flags["_sim_origin"] = "conversion"
+                if tag_origins:
+                    instance.flags["_sim_origin"] = "conversion"
                 strategy_events["pool_events"].append({
                     "uid": uid, "id": instance.def_id, "source": "conversion", "action": action,
                     "previous_id": previous_id, "pool_size": len(current),
@@ -1523,7 +1583,8 @@ def simulate_game(
                 origin = "removal_effect"
             else:
                 origin = "one_time_temporary" if "potion" in engine.catalog.ingredients[instance.def_id].get("tags", []) else "conversion"
-            instance.flags["_sim_origin"] = origin
+            if tag_origins:
+                instance.flags["_sim_origin"] = origin
             pool_source_counts[growth_origin] += 1
             definition = engine.catalog.ingredients[instance.def_id]
             strategy_events["pool_events"].append({
@@ -1532,6 +1593,9 @@ def simulate_game(
                 "rarity": int(definition.get("rarity", 1)), "base": float(definition.get("base", 0)),
                 "tags": list(definition.get("tags", [])), "pool_size": len(current),
             })
+        last_pool_snapshot = identities
+        last_pool_origins = {uid: str(inst.flags.get("_sim_origin", "unknown"))
+                             for uid, inst in current.items()}
 
     def capture_acquisitions(skip_kind: str | None = None, skip_id: str | None = None) -> None:
         nonlocal known_items, known_essences, known_ingredient_uids
@@ -1592,6 +1656,8 @@ def simulate_game(
     roll_streak = 0
     error: str | None = None
     status = "playing"
+    extra_actions_in_spin = 0
+    extra_action_spin = engine.s.spin
 
     while engine.s.status == "playing" and action_count < max_actions:
         try:
@@ -1615,13 +1681,16 @@ def simulate_game(
                     continue
                 if choice.kind == "bundle":
                     # Bundle choices are intentionally all-or-nothing. The
-                    # simulator accepts the first declared option so this
-                    # special choice remains deterministic and single-step.
+                    # Default policies accept the first option; opt-in
+                    # policies evaluate the entire bundle without splitting it.
                     before_choice_uids = {instance.uid: instance.def_id for instance in engine.s.ingredients}
-                    selected_id = choice.offers[0] if choice.offers else None
+                    index = policy.bundle_index(engine, choice)
+                    if not 1 <= index <= len(choice.offers):
+                        raise GameError("模拟策略返回了越界组合序号")
+                    selected_id = choice.offers[index - 1] if choice.offers else None
                     if selected_id is None:
                         raise GameError("组合选择没有可用选项")
-                    engine.choose(1)
+                    engine.choose(index)
                     record_pool_delta(
                         before_choice_uids,
                         "active_choice",
@@ -1635,6 +1704,7 @@ def simulate_game(
                         "selected": selected_id,
                         "pool_size": len(engine.s.ingredients),
                         "pool_size_before": len(before_choice_uids),
+                        "added_count": len({x.uid for x in engine.s.ingredients} - set(before_choice_uids)),
                         "build_state": build_state(),
                     })
                     action_count += 1
@@ -1644,11 +1714,22 @@ def simulate_game(
                         status = "aborted"
                         break
                     continue
+                # Keep candidate slots, not an ID-keyed dictionary: duplicates
+                # and offers discarded by reroll are genuine exposures too.
+                exposure = {"kind": choice.kind, "offer_ids": list(choice.offers),
+                            "pool_size": len(engine.s.ingredients), "spin": engine.s.spin,
+                            "outcome": "unresolved"}
+                strategy_events["offer_exposures"].append(exposure)
+                for def_id in choice.offers:
+                    category = _content_category(engine.catalog, choice.kind, def_id)
+                    if category:
+                        per_game_stats[category].setdefault(def_id, _game_content_row())["offer_count"] += 1
                 if policy.should_reroll(engine, choice):
                     before_scores = [policy.score(engine, choice.kind, def_id) for def_id in choice.offers]
                     before_max = max(before_scores, default=0.0)
                     before_pool = len(engine.s.ingredients)
                     engine.reroll()
+                    exposure["outcome"] = "rerolled"
                     rerolled = engine.s.pending[0]
                     after_scores = [policy.score(engine, rerolled.kind, def_id) for def_id in rerolled.offers]
                     after_max = max(after_scores, default=0.0)
@@ -1672,14 +1753,6 @@ def simulate_game(
                         status = "aborted"
                         break
                     continue
-                for def_id in choice.offers:
-                    category = _content_category(engine.catalog, choice.kind, def_id)
-                    if category:
-                        row = per_game_stats[category].setdefault(
-                            def_id,
-                            _game_content_row(),
-                        )
-                        row["offer_count"] += 1
                 offer_scores = {
                     def_id: {
                         "score": policy.score(engine, choice.kind, def_id),
@@ -1740,9 +1813,11 @@ def simulate_game(
                         if choice.kind == "item" and selected_id not in engine.s.items:
                             row["consumed_count"] += 1
                 capture_acquisitions(choice.kind, selected_id)
+                exposure["outcome"] = "resolved"
                 strategy_events["choices"].append({
                     "kind": choice.kind,
                     "offers": offer_scores,
+                    "offer_ids": list(exposure["offer_ids"]),
                     "selected": selected_id,
                     "pool_size": len(engine.s.ingredients),
                     "pool_size_before": pool_size_before_choice if choice.kind == "ingredient" else None,
@@ -1761,6 +1836,38 @@ def simulate_game(
                 if on_choice:
                     on_choice(engine, choice, selected_id)
             else:
+                extra_action = policy.pre_spin_action(engine)
+                if extra_action is not None:
+                    if engine.s.spin != extra_action_spin:
+                        extra_action_spin, extra_actions_in_spin = engine.s.spin, 0
+                    extra_actions_in_spin += 1
+                    if extra_actions_in_spin > 32:
+                        raise GameError("模拟策略单回合主动操作过多")
+                    if not isinstance(extra_action, dict) or set(extra_action) != {"action", "item_id"}:
+                        raise GameError("模拟策略返回了无效的主动操作")
+                    command = extra_action["action"]
+                    if command not in {"use", "toggle"} or not any(all(spec.get(k) == v for k, v in extra_action.items()) for spec in engine.agent_action_specs()):
+                        raise GameError("模拟策略返回了不合法的主动操作")
+                    before_action = engine.s.to_dict()
+                    before_action_uids = {instance.uid: instance.def_id for instance in engine.s.ingredients}
+                    if command == "use":
+                        engine.use_item(extra_action["item_id"])
+                    else:
+                        engine.toggle_item(extra_action["item_id"])
+                    if before_action == engine.s.to_dict():
+                        raise GameError("模拟策略主动操作未推进状态")
+                    strategy_events.setdefault("active_actions", []).append({**extra_action, "spin": engine.s.spin,
+                        "pool_before": len(before_action_uids), "pool_after": len(engine.s.ingredients)})
+                    record_pool_delta(before_action_uids, "mechanism", command, growth_source="item_generation")
+                    capture_acquisitions()
+                    max_pool_size = max(max_pool_size, len(engine.s.ingredients))
+                    action_count += 1
+                    violations = validate_simulation_state(engine)
+                    if violations:
+                        error = "state_invariant:" + ",".join(violations)
+                        status = "aborted"
+                        break
+                    continue
                 removal_index = policy.removal_index(engine)
                 if removal_index is not None:
                     removed = engine.s.ingredients[removal_index - 1]
@@ -1769,6 +1876,8 @@ def simulate_game(
                     before_remove_uids = {instance.uid: instance.def_id for instance in engine.s.ingredients}
                     removed_score = policy.score(engine, "ingredient", removed.def_id)
                     removed_components = policy.score_components(engine, "ingredient", removed.def_id)
+                    retention_reader = getattr(policy, "instance_retention_components", None)
+                    retention = retention_reader(engine, removed) if callable(retention_reader) else None
                     engine.remove(removal_index)
                     strategy_events["deletes"].append({
                         "id": removed.def_id,
@@ -1776,6 +1885,7 @@ def simulate_game(
                         "pool_after": len(engine.s.ingredients),
                         "score": removed_score,
                         "components": removed_components,
+                        "instance_retention_components": retention,
                         "base_value": float(removed_row.get("base", 0)) + int(removed.permanent_bonus),
                         "negative": "negative" in removed_row.get("tags", []),
                         "tags": list(removed_row.get("tags", [])),
@@ -1856,6 +1966,11 @@ def simulate_game(
             error = f"{type(exc).__name__}:{exc}"
             status = "aborted"
             break
+        finally:
+            # Skip/reroll can trigger essences; callbacks can also mutate the
+            # pool. Observe missed boundaries without changing policy flags.
+            record_pool_delta(last_pool_snapshot, "mechanism", "action:unattributed", tag_origins=False)
+            max_pool_size = max(max_pool_size, len(engine.s.ingredients))
 
     if status != "aborted":
         if engine.s.status in {"won", "lost"}:
@@ -1876,6 +1991,11 @@ def simulate_game(
     for def_id in state.consumed_essences:
         row = per_game_stats["essences"].setdefault(def_id, _game_content_row())
         row["consumed_count"] += 1
+    for def_id, amount in Counter(state.removed_history).items():
+        category = _content_category(engine.catalog, "ingredient", def_id)
+        if category:
+            row = per_game_stats[category].setdefault(def_id, _game_content_row())
+            row["removal_count"] += amount
     held_items = list(state.items)
     held_ingredients = [
         instance.def_id
@@ -1893,6 +2013,16 @@ def simulate_game(
     strategy_events["pool_origin_counts"] = dict(Counter(
         str(instance.flags.get("_sim_origin", "unknown")) for instance in state.ingredients
     ))
+    flows = strategy_events["pool_flows"]
+    added = sum(flow["added"] for flow in flows)
+    removed = sum(flow["removed"] for flow in flows)
+    strategy_events["pool_flow_summary"] = {
+        "scope": "action_boundary", "initial": initial_pool_size, "added": added,
+        "removed": removed, "identity_changes": sum(flow["identity_changes"] for flow in flows),
+        "final": len(state.ingredients),
+        "reconciled": initial_pool_size + added - removed == len(state.ingredients),
+        "removal_origin_counts": dict(Counter(event["origin"] for event in strategy_events["pool_removals"])),
+    }
     held_by_category = {
         "items": Counter(held_items),
         "ingredients": Counter(held_ingredients),
@@ -1949,6 +2079,10 @@ def _content_row(definition: dict[str, Any], kind: str) -> dict[str, Any]:
         "consumed_count": 0,
         "consumed_games": 0,
         "wins_when_consumed": 0,
+        "removal_count": 0,
+        "removed_games": 0,
+        "wins_when_removed": 0,
+        "trigger_tracking": "not_instrumented" if kind in {"ingredient", "equipment"} else "partial" if kind == "item" else "instrumented",
         "selected_games": 0,
         "final_owned_count": 0,
         "final_owned_games": 0,
@@ -2001,14 +2135,27 @@ class BatchAccumulator:
             "15_19": Counter(),
             "20_plus": Counter(),
         }
+        self.generator_capability_counts = {kind: Counter() for kind in GENERATION_CLASSES}
         self.generator_offer_count = 0
         self.generator_selected_count = 0
+        self.generator_resolved_offer_count = 0
+        self.generator_rerolled_offer_count = 0
+        self.generator_unresolved_offer_count = 0
+        self.offer_tracked_games = 0
         self.order_reached: Counter[int] = Counter()
         self.order_died: Counter[int] = Counter()
         self.order_death_gap_sum: Counter[int] = Counter()
         self.growth: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         self.total_rolls = 0
         self.total_deletes = 0
+        self.active_action_counts: Counter[str] = Counter()
+        self.active_action_item_counts: Counter[str] = Counter()
+        self.active_action_games = 0
+        self.bundle_counts: Counter[str] = Counter()
+        self.pool_flow_totals: Counter[str] = Counter()
+        self.pool_flow_tracked_games = 0
+        self.pool_flow_unreconciled_games = 0
+        self.pool_removal_origin_counts: Counter[str] = Counter()
 
     def _category(self, kind: str, def_id: str) -> str | None:
         return _content_category(self.catalog, kind, def_id)
@@ -2045,6 +2192,42 @@ class BatchAccumulator:
     def observe_record(self, record: GameRecord) -> None:
         self.total_rolls += len(record.strategy_events.get("rolls", []))
         self.total_deletes += len(record.strategy_events.get("deletes", []))
+        active_actions = record.strategy_events.get("active_actions", [])
+        self.active_action_games += bool(active_actions)
+        self.active_action_counts.update(x["action"] for x in active_actions)
+        self.active_action_item_counts.update(f"{x['action']}:{x['item_id']}" for x in active_actions)
+        if record.strategy_events.get("offer_tracking") == "candidate_slots_including_rerolls/v1":
+            self.offer_tracked_games += 1
+            for exposure in record.strategy_events.get("offer_exposures", []):
+                if exposure["kind"] == "ingredient":
+                    for def_id in exposure["offer_ids"]:
+                        for kind in generation_classes(self.catalog.ingredients.get(def_id, {})):
+                            self.generator_capability_counts[kind]["offered"] += 1
+                            self.generator_capability_counts[kind][exposure["outcome"] + "_offered"] += 1
+                # Resolved offers are counted by the existing on_choice hook.
+                # Add only previously invisible discarded/failed offers here.
+                if exposure["outcome"] == "resolved":
+                    continue
+                for def_id in exposure["offer_ids"]:
+                    category = self._category(exposure["kind"], def_id)
+                    if category:
+                        self.content[category][def_id]["offer_count"] += 1
+                    if exposure["kind"] == "ingredient":
+                        definition = self.catalog.ingredients.get(def_id, {})
+                        if any(definition.get(field) for field in HeuristicStrategy._GENERATOR_FIELDS):
+                            self.generator_offer_count += 1
+                            if exposure["outcome"] == "rerolled":
+                                self.generator_rerolled_offer_count += 1
+                            else:
+                                self.generator_unresolved_offer_count += 1
+        for event in record.strategy_events.get("choices", []):
+            if event.get("kind") == "bundle":
+                self.bundle_counts["choices"] += 1
+                # Use actual additions, never assume an option ID or order.
+                if "added_count" not in event:
+                    self.bundle_counts["untracked"] += 1
+                else:
+                    self.bundle_counts["accepted" if event["added_count"] > 0 else "declined"] += 1
         if self.retain_details:
             self.records.append(record)
         else:
@@ -2080,9 +2263,19 @@ class BatchAccumulator:
         self.delete_events.extend(record.strategy_events.get("deletes", []))
         self.pool_origin_counts.update(record.strategy_events.get("pool_origin_counts", {}))
         self.pool_growth_source_counts.update(record.strategy_events.get("pool_source_counts", {}))
+        flow = record.strategy_events.get("pool_flow_summary")
+        if flow is not None:
+            self.pool_flow_tracked_games += 1
+            self.pool_flow_unreconciled_games += not flow["reconciled"]
+            self.pool_flow_totals.update({key: flow[key] for key in ("initial", "added", "removed", "identity_changes", "final")})
+            self.pool_removal_origin_counts.update(flow.get("removal_origin_counts", {}))
         for choice_event in record.strategy_events.get("choices", []):
             if choice_event.get("kind") != "ingredient":
                 continue
+            selected_id = choice_event.get("selected")
+            if selected_id and record.strategy_events.get("offer_tracking") == "candidate_slots_including_rerolls/v1":
+                for kind in generation_classes(self.catalog.ingredients.get(selected_id, {})):
+                    self.generator_capability_counts[kind]["selected"] += 1
             pool_size = choice_event.get("pool_size_before")
             if pool_size is None:
                 continue
@@ -2094,10 +2287,11 @@ class BatchAccumulator:
                 stats["skipped"] += 1
             else:
                 stats["selected"] += 1
-            for def_id in choice_event.get("offers", {}):
+            for def_id in choice_event.get("offer_ids", choice_event.get("offers", {})):
                 definition = self.catalog.ingredients.get(def_id, {})
                 if any(definition.get(field) for field in HeuristicStrategy._GENERATOR_FIELDS):
                     self.generator_offer_count += 1
+                    self.generator_resolved_offer_count += 1
             selected_id = choice_event.get("selected")
             if selected_id and selected_id in self.catalog.ingredients:
                 definition = self.catalog.ingredients[selected_id]
@@ -2132,6 +2326,12 @@ class BatchAccumulator:
                         row["consumed_games"] += 1
                         if record.won:
                             row["wins_when_consumed"] += 1
+                    removal_count = int(values.get("removal_count", 0))
+                    if removal_count:
+                        row["removal_count"] += removal_count
+                        row["removed_games"] += 1
+                        if record.won:
+                            row["wins_when_removed"] += 1
         for category, ids in record.selected_content.items():
             for def_id in ids:
                 row = self.content[category].get(def_id)
@@ -2186,6 +2386,9 @@ class BatchAccumulator:
                 else:
                     row["win_rate_when_consumed"] = None
                     row["win_lift_when_consumed"] = None
+                removed_games = int(row["removed_games"])
+                row["win_rate_when_removed"] = row["wins_when_removed"] / removed_games if removed_games else None
+                row["win_lift_when_removed"] = (row["win_rate_when_removed"] - win_rate if removed_games else None)
 
                 selected_lift = row["win_lift_when_selected"]
                 owned_lift = row["win_lift_when_owned"]
@@ -2258,7 +2461,7 @@ class BatchAccumulator:
                 "order": order,
                 "reached": reached,
                 "died": died,
-                "conditional_death_rate": died / reached if reached else 0.0,
+                "conditional_death_rate": died / reached if reached else None,
                 "average_gold_gap_at_death": (
                     self.order_death_gap_sum[order] / died if died else None
                 ),
@@ -2317,11 +2520,26 @@ class BatchAccumulator:
             ),
             "average_rolls": self.total_rolls / self.games if self.games else 0.0,
             "average_deletes": self.total_deletes / self.games if self.games else 0.0,
+            "active_action_total": sum(self.active_action_counts.values()),
+            "active_action_games": self.active_action_games,
+            "active_action_counts": dict(self.active_action_counts),
+            "active_action_item_counts": dict(self.active_action_item_counts),
+            "bundle_choice_counts": dict(self.bundle_counts),
             "pool_origin_counts": dict(self.pool_origin_counts),
             "pool_event_counts": dict(self.pool_event_counts),
             "pool_growth_source_counts": dict(self.pool_growth_source_counts),
+            "pool_flow_tracked_games": self.pool_flow_tracked_games,
+            "pool_flow_unreconciled_games": self.pool_flow_unreconciled_games,
+            "pool_flow_totals": dict(self.pool_flow_totals),
+            "pool_removal_origin_counts": dict(self.pool_removal_origin_counts),
             "active_choice_total": int(self.pool_growth_source_counts.get("active_choice", 0)),
             "automatic_generation_total": int(self.pool_growth_source_counts.get("automatic_generation", 0)),
+            "offer_tracking": {
+                "protocol": "candidate_slots_including_rerolls/v1",
+                "tracked_games": self.offer_tracked_games,
+                "legacy_untracked_games": len(self.records) - self.offer_tracked_games,
+                "scope": "Candidate slots, including duplicates and rerolled offers; not unique offer sets.",
+            },
             "pool_band_choice_stats": {
                 band: {
                     "choices": int(stats.get("choices", 0)),
@@ -2337,10 +2555,19 @@ class BatchAccumulator:
             "generator_choice_stats": {
                 "offered": self.generator_offer_count,
                 "selected": self.generator_selected_count,
+                "resolved_offered": self.generator_resolved_offer_count,
+                "rerolled_offered": self.generator_rerolled_offer_count,
+                "unresolved_offered": self.generator_unresolved_offer_count,
                 "selection_rate": (
                     self.generator_selected_count / self.generator_offer_count
                     if self.generator_offer_count else 0.0
                 ),
+            },
+            "generator_capability_stats": {
+                kind: {**{key: int(stats.get(key, 0)) for key in
+                          ("offered", "selected", "resolved_offered", "rerolled_offered", "unresolved_offered")},
+                       "selection_rate": stats["selected"] / stats["offered"] if stats["offered"] else None}
+                for kind, stats in self.generator_capability_counts.items()
             },
             "average_pool_event_size": sum(self.pool_event_sizes) / len(self.pool_event_sizes) if self.pool_event_sizes else 0.0,
             "roll_effective_rate": (
@@ -2363,6 +2590,10 @@ class BatchAccumulator:
             games_detail=[record.to_dict() for record in self.records] if self.retain_details else [],
             notes=[
                 "相关性指标不是因果证明；选择策略会影响选择率和持有时通关率。",
+                "候选出现按候选槽位计数，包含重复候选和重调丢弃候选；旧报告只记录最终候选，口径不同，不可直接混并比较选择率。",
+                "池大小选择率以最终选择/跳过为分母，不包括重调；生成类选择率目前仅覆盖持续/周期生成字段，不是全部生成能力。",
+                "成分/装备触发尚未完整埋点，trigger_tracking=not_instrumented时0不表示无触发；物品触发仅覆盖已埋点事件。",
+                "removal_count来自真实移除历史，包含正常删除、消耗、自毁等离场；离场时通关率仍存在构筑与存活偏差。",
                 f"疑似强弱标记要求至少观察到 {max(10, self.games // 50)} 次候选出现。",
             ],
             fun_mode=fun_mode,
@@ -2426,19 +2657,20 @@ class SimulationReport:
         lines = [
             f"### {title}",
             "",
-            "| ID | rarity | offers | choices | acquired | triggers | consumed | final owned | selection | possession | owned win | triggered win | flag |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            "| ID | rarity | offers | choices | acquired | triggers | consumed | removed | final owned | selection | possession | owned win | triggered win | flag |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
         for row in rows:
             lines.append(
-                "| {id} | {rarity} | {offers} | {choices} | {acquisitions} | {triggers} | {consumed} | {owned_count} | {selection} | {possession} | {win} | {triggered_win} | {flag} |".format(
+                "| {id} | {rarity} | {offers} | {choices} | {acquisitions} | {triggers} | {consumed} | {removed} | {owned_count} | {selection} | {possession} | {win} | {triggered_win} | {flag} |".format(
                     id=self._safe_cell(row["id"]),
                     rarity=self._safe_cell(row.get("rarity") or "—"),
                     offers=row["offer_count"],
                     choices=row["choice_count"],
                     acquisitions=row["acquisition_count"],
-                    triggers=row["trigger_count"],
+                    triggers="未统计" if row.get("trigger_tracking") == "not_instrumented" else row["trigger_count"],
                     consumed=row["consumed_count"],
+                    removed=row.get("removal_count", 0),
                     owned_count=row["final_owned_count"],
                     selection=self._pct(row["selection_rate"]),
                     possession=self._pct(row["possession_rate"]),
@@ -2479,6 +2711,9 @@ class SimulationReport:
             f"| 平均最大池大小 | {summary['average_max_pool_size']:.2f} |",
             f"| 平均 Roll 次数 | {summary['average_rolls']:.2f} |",
             f"| 平均删除次数 | {summary['average_deletes']:.2f} |",
+            f"| 主动使用/开关次数 | {summary.get('active_action_total', '未统计')} |",
+            f"| 使用主动操作的局数 | {summary.get('active_action_games', '未统计')} |",
+            f"| 整组加入/不加入/未统计次数 | {summary.get('bundle_choice_counts', {})} |",
             f"| 有效 Roll 比例 | {self._pct(summary['roll_effective_rate'])} |",
             "",
             "池大小分布（按每局最大池大小）",
@@ -2520,8 +2755,17 @@ class SimulationReport:
         source_counts = summary.get("pool_growth_source_counts", {})
         for source in ("active_choice", "automatic_generation", "copy", "item_generation", "periodic_slag", "other"):
             lines.append(f"| {source_labels[source]} (`{source}`) | {int(source_counts.get(source, 0))} |")
+        lines.append("新增/移除按动作前后存活实例观察；同动作内生成并消失的实例不计入。复制桶仅覆盖copied事件，非UID级因果追踪。")
+        lines.extend(["", "### 净池变化核对", ""])
+        tracked = summary.get("pool_flow_tracked_games", 0)
+        if tracked:
+            flow = summary["pool_flow_totals"]
+            lines.append(f"已统计{tracked}局；未核平{summary['pool_flow_unreconciled_games']}局。初始{flow.get('initial', 0)} + 新增{flow.get('added', 0)} - 移除{flow.get('removed', 0)} = 最终{flow.get('final', 0)}。")
+            lines.append(f"同实例身份转换{flow.get('identity_changes', 0)}次，不算扩池。移除来源为移除前最后观察到的构筑标签，不等同于真实因果来源。")
+        else:
+            lines.append("未统计；不能将旧报告缺失值解释为0。")
 
-        lines.extend(["", "## 鎸夋睜澶у皬鐨勯€夋嫨鐜?", ""])
+        lines.extend(["", "## 按池大小的选择率", ""])
         lines.extend([
             "| band | choices | selected | skipped | selection rate |",
             "|---|---:|---:|---:|---:|",
@@ -2534,11 +2778,24 @@ class SimulationReport:
                 f"{int(stats.get('skipped', 0))} | {self._pct(stats.get('selection_rate', 0.0))} |"
             )
         generator_stats = summary.get("generator_choice_stats", {})
+        tracking = summary.get("offer_tracking", {})
+        if tracking:
+            lines.append(f"候选槽位曝光覆盖{tracking.get('tracked_games', 0)}局，旧口径未覆盖{tracking.get('legacy_untracked_games', 0)}局；包含重复候选及重调丢弃候选。池大小选择率仅以最终选择/跳过为分母。")
+        else:
+            lines.append("候选曝光覆盖未统计；旧报告不能视为已完整计入重调候选。")
         lines.append(
             f"- generator ingredients: offers {int(generator_stats.get('offered', 0))} / "
             f"selected {int(generator_stats.get('selected', 0))} / "
             f"selection rate {self._pct(generator_stats.get('selection_rate', 0.0))}"
         )
+        capabilities = summary.get("generator_capability_stats")
+        if capabilities:
+            lines.extend(["", "### 生成能力分类型曝光", "",
+                          "仅覆盖offer_tracking记录的对局；同一声明可属于多类，不可简单相加。脚本未分类不视为持续污染；不改变策略评分。", "",
+                          "| 类型 | 曝光槽位 | 被重调槽位 | 选择次数 | 选择率 |",
+                          "|---|---:|---:|---:|---:|"])
+            for kind, stats in capabilities.items():
+                lines.append(f"| {kind} | {stats['offered']} | {stats['rerolled_offered']} | {stats['selected']} | {self._pct(stats['selection_rate'])} |")
 
         lines.extend(["", "## 主要结束原因", ""])
         if summary["death_reasons"]:
@@ -2648,7 +2905,7 @@ class DifficultySweepReport:
             f"- 娱乐模式：`{self.fun_mode}`",
             "- 同一 base seed 在不同难度下使用相同的逐局 seed 派生方式，便于横向对照。",
             "",
-            "## 难度 1–10 通关率曲线",
+            "## 各难度通关率曲线",
             "",
             "| 难度 | 局数 | 通关率 | 平均完成订单 | 平均最终金币 | 第8–10层死亡数 |",
             "|---:|---:|---:|---:|---:|---:|",
@@ -2682,7 +2939,7 @@ class DifficultySweepReport:
                 gap = "—" if row["average_gold_gap_at_death"] is None else f"{row['average_gold_gap_at_death']:.2f}g"
                 lines.append(
                     f"| {difficulty} | {row['order']} | {row['reached']} | {row['died']} | "
-                    f"{row['conditional_death_rate'] * 100:.1f}% | {gap} |"
+                    f"{SimulationReport._pct(row['conditional_death_rate'])} | {gap} |"
                 )
         lines.extend(["", "## 各难度池增长来源", ""])
         lines.extend(["| 难度 | 主动抓取 | 成分自动生成 | 复制 | 物品生成 | 周期废渣 | 其他来源 |", "|---:|---:|---:|---:|---:|---:|---:|"])
@@ -2704,7 +2961,7 @@ class DifficultySweepReport:
             )
         lines.extend(["", "## 说明", ""])
         lines.extend(f"- {note}" for note in self.notes)
-        lines.extend(["", "各难度的完整明细见同目录下的 `balance_d1` 至 `balance_d10` 报告。"])
+        lines.extend(["", "各难度的完整明细见指定明细目录下对应的 `balance_dN` 报告。"])
         return "\n".join(lines) + "\n"
 
 
@@ -2718,15 +2975,18 @@ def run_batch(
     catalog: Catalog | None = None,
     retain_details: bool = True,
     fun_mode: str = "none",
+    start_index: int = 0,
 ) -> SimulationReport:
     if games < 1:
         raise ValueError("模拟局数必须至少为1")
     if max_actions < 1:
         raise ValueError("max_actions必须至少为1")
+    if start_index < 0:
+        raise ValueError("start_index必须非负")
     policy = strategy or HeuristicStrategy()
     active_catalog = catalog or Catalog.load()
     accumulator = BatchAccumulator(active_catalog, games, retain_details=retain_details)
-    for index in range(games):
+    for index in range(start_index, start_index + games):
         game_seed = derive_seed(seed, index)
         record = simulate_game(
             game_seed,

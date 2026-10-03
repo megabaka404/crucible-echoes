@@ -64,7 +64,7 @@
   {"id":"ban","name":"禁令","rarity":2,"description":"可自由开启/关闭；开启时停止所有成分自身的生成行为。","toggle_flag":"ingredient_generation_disabled"},
   {"id":"crowded_lab","name":"拥挤实验室","rarity":2,"description":"成分池达到30个时，每回合+3g。","round_condition":{"pool_size":30,"gold":3}},
   {"id":"booster_pump","name":"增压泵","rarity":2,"description":"所有液体+1g。","bonuses":[{"tag":"liquid","amount":1}]},
-  {"id":"advanced_tube_rack","name":"高级试管架","rarity":2,"description":"玻璃器材+1g，第一次被打碎时保留。","bonuses":[{"tag":"glass","amount":1}],"script":"advanced_tube_rack"},
+  {"id":"advanced_tube_rack","name":"高级试管架","rarity":2,"description":"玻璃器材+1g，第一次被打碎时保留。","bonuses":[{"tag":"glass","amount":1}],"script":"advanced_tube_rack","protect_once":{"tag":"glass","reason":"shattered","flag":"advanced_rack_saved","event":"shatter_prevented"}},
   {"id":"master_key","name":"万能钥匙","rarity":2,"description":"所有箱子每回合有30%概率自动开启。","script":"master_key"},
   {"id":"automatic_stirrer","name":"自动搅拌棒","rarity":2,"description":"大锅、魔法坩埚+2g；每10回合使相邻液体永久+1g。","bonuses":[{"ids":["cauldron","magic_crucible"],"amount":2}],"script":"automatic_stirrer"},
   {"id":"advanced_keyring","name":"高级钥匙圈","rarity":2,"description":"每次打开箱子额外获得10g。","event_bonus":{"opened":10}},

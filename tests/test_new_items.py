@@ -32,7 +32,7 @@ class NewItemTests(unittest.TestCase):
     def test_new_item_ids_are_unique_and_rarities_are_correct(self) -> None:
         catalog = GameEngine().catalog
         new_rarities = {
-            "spare_beaker": 1,
+            "spare_beaker": 2,
             "old_ledger": 1,
             "order_appendix": 1,
             "wastepaper_box": 1,
@@ -59,14 +59,17 @@ class NewItemTests(unittest.TestCase):
         ):
             self.assertIn(essence_id, catalog.essences)
 
-    def test_spare_beaker_periodic_choice_and_essence_bonus(self) -> None:
+    def test_spare_beaker_two_choices_and_essence_bonus(self) -> None:
         engine = self.fresh()
         engine.add_ingredient("water", emit=False)
         engine.s.items.append("spare_beaker")
-        engine.s.spin = 3
+        engine.s.pending.append(engine.make_choice("ingredient"))
+        engine.choose(1)
         restored = GameEngine().bind(GameState.from_dict(engine.s.to_dict()))
-        restored.spin()
-        self.assertEqual(2, len([choice for choice in restored.s.pending if choice.kind == "ingredient"]))
+        restored.s.pending.append(restored.make_choice("ingredient"))
+        restored.choose(1)
+        self.assertEqual(4, len(restored.make_choice("ingredient").offers))
+        self.assertEqual(3, len(restored.make_choice("ingredient").offers))
 
         essence = self.fresh()
         essence.add_essence("spare_beaker_essence")

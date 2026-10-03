@@ -9,10 +9,30 @@ from pathlib import Path
 
 from crucible_echoes.cli import main
 from crucible_echoes.engine import GameEngine
+from crucible_echoes.model import PendingChoice
 from crucible_echoes.save import load_game, save_game
 
 
 class AgentCliTests(unittest.TestCase):
+    def test_terminal_and_pending_item_actions_return_errors_without_saving(self):
+        for status, pending in (("lost", False), ("won", False), ("playing", True)):
+            for action, item_id in (("use", "sandpaper_box"), ("toggle", "ban")):
+                with self.subTest(status=status, pending=pending, action=action), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "state.json"
+                    engine = GameEngine()
+                    engine.new_game(42)
+                    engine.s.items.extend(["sandpaper_box", "ban"])
+                    engine.s.status = status
+                    if pending:
+                        engine.s.pending = [PendingChoice("ingredient", ["water"])]
+                    save_game(engine.s, path)
+                    before = path.read_bytes()
+                    code, payload = self.call_agent(path, action, item_id)
+                    self.assertEqual(2, code)
+                    self.assertFalse(payload["ok"])
+                    self.assertNotIn(f"{action} {item_id}", payload["available_actions"])
+                    self.assertEqual(before, path.read_bytes())
+
     def call_agent(self, save: Path, *args: str) -> tuple[int, dict]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

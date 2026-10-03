@@ -90,6 +90,8 @@ class GameState:
         stats = dict(copied.get("stats") or {})
         stats.setdefault("spawn_counters", {})
         stats.setdefault("round_events", {})
+        stats.setdefault("round_event_values", {})
+        stats.setdefault("round_removed_values", [])
         stats.setdefault("item_event_counts", {})
         stats.setdefault("item_trigger_counts", {})
         stats.setdefault("item_storage", {})

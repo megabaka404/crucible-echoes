@@ -7,6 +7,24 @@ from crucible_echoes.geometry import adjacent_indices, board_coords
 
 
 class GeometryAndEffectTests(unittest.TestCase):
+    def test_consumption_reward_requires_actual_removal(self) -> None:
+        engine = GameEngine(); engine.new_game(912)
+        engine.s.ingredients.clear()
+        eater = engine.add_ingredient("kitten", emit=False)
+        food = engine.add_ingredient("coin", emit=False)
+        guard = engine.add_ingredient("restraint", emit=False)
+        engine._board = [eater, food, guard]
+        engine._coords = [(0, 0), (0, 1), (0, 2)]
+        before = engine.s.gold
+        self.assertFalse(engine._consume_first(0, {"coin"}, reward=9))
+        self.assertIn(food, engine.s.ingredients)
+        self.assertEqual(before, engine.s.gold)
+        self.assertTrue(engine._consume_first(0, {"coin"}, reward=9))
+        self.assertNotIn(food, engine.s.ingredients)
+        self.assertEqual(before + 9, engine.s.gold)
+        self.assertFalse(engine._consume_first(0, {"coin"}, reward=9))
+        self.assertEqual(before + 9, engine.s.gold)
+
     def test_eight_neighbor_adjacency_and_blueprint_cell(self) -> None:
         base = board_coords(False)
         center = base.index((1, 2))
@@ -57,4 +75,3 @@ class GeometryAndEffectTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

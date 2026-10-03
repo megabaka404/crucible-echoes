@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>坩埚余响 · Crucible Echoes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <div id="toast" class="toast" aria-live="polite"></div>
+
+    <section id="menu-screen" class="screen menu-screen">
+      <div class="brand-mark">✦</div>
+      <h1>坩埚余响</h1>
+      <p class="subtitle">Crucible Echoes · 数据驱动炼金构筑</p>
+      <div class="menu-layout">
+        <div class="menu-card menu-actions">
+          <button id="new-game-btn" class="primary wide">新游戏</button>
+          <button id="continue-btn" class="wide">继续游戏</button>
+          <div class="menu-row">
+            <button id="codex-btn">图鉴</button>
+            <button id="settings-btn">设置</button>
+            <button id="exit-btn">退出</button>
+          </div>
+        </div>
+        <form id="new-game-form" class="menu-card setup-card">
+          <h2>开始实验</h2>
+          <label>随机种子<input id="seed-input" type="text" inputmode="numeric" value="1" pattern="[+-]?[0-9]+" title="输入十进制整数；支持大整数和负数种子"></label>
+          <label>难度
+            <select id="difficulty-input"></select>
+          </label>
+          <label>娱乐模式
+            <select id="fun-mode-input">
+              <option value="none">无</option>
+              <option value="giant">巨型</option>
+              <option value="rapid">迅速</option>
+              <option value="blind_box">盲盒</option>
+              <option value="minimal">极简</option>
+              <option value="mutation">变异</option>
+            </select>
+          </label>
+          <p id="difficulty-help" class="muted">选择难度后，这里会显示该难度的规则摘要。</p>
+          <button class="primary" type="submit">进入坩埚</button>
+        </form>
+      </div>
+      <p class="build-note">桌面版 · 核心规则与 CLI / Agent 共用</p>
+    </section>
+
+    <section id="game-screen" class="screen game-screen hidden">
+      <header class="topbar">
+        <div class="top-title"><span class="sigil">✦</span><span>坩埚余响</span></div>
+        <div class="order-readout">
+          <span id="mode-badge" class="badge">主线</span>
+          <span>订单 <strong id="order-number">—</strong></span>
+          <span class="gold">金币 <strong id="gold-value">0g</strong></span>
+          <span>回合 <strong id="turns-value">—</strong></span>
+        </div>
+        <div class="top-actions">
+          <span id="difficulty-badge" class="badge subtle">D1</span>
+          <button id="save-btn" class="small">保存</button>
+          <button id="back-menu-btn" class="small">菜单</button>
+        </div>
+      </header>
+
+      <div class="order-strip">
+        <div class="order-text"><span>当前价值</span><strong id="current-value">0g</strong><span class="slash">/</span><span id="target-value">0g</span></div>
+        <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+        <div id="pool-summary" class="pool-summary">池 0/20</div>
+      </div>
+
+      <main class="play-layout">
+        <section class="board-panel panel">
+          <div class="panel-heading"><h2>实验台</h2><span id="board-caption" class="muted">—</span></div>
+          <div id="board" class="board" aria-label="实验台成分"></div>
+          <div id="pool-inventory-heading" class="pool-inventory-heading muted">成分池中未在本轮出现的成分</div>
+          <div id="pool-list" class="pool-list" aria-label="成分池"></div>
+          <div id="selection-hint" class="selection-hint hidden">请选择一个目标 · <button id="cancel-selection" class="link-button">取消</button></div>
+        </section>
+
+        <aside class="details-panel panel">
+          <div class="panel-heading"><h2>详情</h2><span id="detail-kind" class="muted">未选择</span></div>
+          <div id="details" class="details-empty">悬停或点击成分，查看完整效果与邻接关系。</div>
+          <div id="preview-box" class="preview-box hidden"></div>
+          <button id="preview-btn" class="secondary wide">预计结算</button>
+          <div id="item-actions" class="item-actions"></div>
+        </aside>
+      </main>
+
+      <section class="pending-panel panel hidden" id="pending-panel">
+        <div class="panel-heading"><h2 id="pending-title">选择</h2><span id="pending-source" class="muted"></span></div>
+        <div id="pending-offers" class="offers"></div>
+        <div class="pending-actions"><button id="pending-skip" class="secondary">跳过</button><button id="pending-reroll" class="secondary">Roll</button></div>
+      </section>
+
+      <footer class="control-bar">
+        <div class="token-row">
+          <span class="token token-roll">Roll <strong id="roll-token">0</strong></span>
+          <span class="token token-delete">Delete <strong id="delete-token">0</strong></span>
+          <span class="token token-essence">Essence <strong id="essence-token">0</strong></span>
+          <span id="ban-state" class="ban-state hidden"></span>
+        </div>
+        <div class="main-controls">
+          <button id="roll-btn" class="secondary">Roll 候选</button>
+          <button id="delete-btn" class="secondary">Delete 成分</button>
+          <button id="end-turn-btn" class="primary end-turn">结束回合</button>
+        </div>
+      </footer>
+      <details id="action-changes" class="action-changes panel hidden" open>
+        <summary>本次变化 · 操作前后汇总，不表示触发顺序</summary>
+        <div id="action-changes-content" aria-live="polite"></div>
+      </details>
+      <aside id="mechanism-hint" class="mechanism-hint hidden" aria-live="polite">
+        <span id="mechanism-hint-text"></span>
+        <button id="dismiss-hint-btn" class="small" type="button">知道了</button>
+      </aside>
+      <section class="log-panel panel"><div class="panel-heading"><h2>事件日志</h2><button id="clear-log-btn" class="link-button">清空视图</button></div><div id="event-log"></div></section>
+    </section>
+
+    <section id="codex-screen" class="screen aux-screen hidden">
+      <header class="aux-header"><h1>图鉴</h1><button class="small" data-back>返回</button></header>
+      <p class="muted">只显示已经遇到或当前持有的定义。</p>
+      <div id="codex-content" class="codex-content"></div>
+    </section>
+
+    <section id="settings-screen" class="screen aux-screen hidden">
+      <header class="aux-header"><h1>设置</h1><button class="small" data-back>返回</button></header>
+      <div class="menu-card settings-card">
+        <label class="check-row"><input id="hints-setting" type="checkbox" checked> 显示首次机制提示</label>
+        <label class="check-row"><input id="animations-setting" type="checkbox" checked> 显示快速反馈动画</label>
+        <p class="muted">设置只保存在本机浏览器存储，不影响存档与规则。</p>
+      </div>
+    </section>
+
+    <section id="result-screen" class="screen aux-screen hidden">
+      <div class="result-card menu-card"><div id="result-symbol" class="result-symbol">✦</div><h1 id="result-title">实验结束</h1><p id="result-copy"></p><button id="result-menu-btn" class="primary">返回主菜单</button></div>
+    </section>
+  </div>
+  <script src="js/app.js"></script>
+</body>
+</html>

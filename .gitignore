@@ -2,7 +2,15 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-desktop/
 .saves/
+saves/
 *.tmp
 work-test-save.json
+desktop-smoke-result.json
+dist/
+build/CrucibleEchoes/
+build/optimization-*/
+build/item-v4-cli-check.json
+build/item-v4-cli-check.md
 reports/

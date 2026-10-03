@@ -22,6 +22,13 @@ The JSON envelope contains:
   `last_board` row includes `present`; a `false` row was on the sampled board
   but was removed during that spin and no longer participates in board-based
   triggers;
+- `state.stats.last_board_topology`: optional saved `all_adjacent` / `panorama`
+  topology of the last settled board. On load, the core restores that board
+  with live instance UIDs, preserving holes left by removed instances and
+  excluding off-board pool entries from board-based predicates. Loading does
+  not redraw RNG or emit gameplay events. Legacy saves without this metadata
+  safely derive periodic-item topology; an expired one-turn topology cannot
+  be perfectly recovered from legacy files that never saved it;
 - `stats.spawn_counters`: persisted success counters such as the summon-magic
   guarantee counter (old saves receive an empty object automatically);
 - `state.stats.round_events`: persisted counts for the current round, so
@@ -69,8 +76,59 @@ Active items such as the sandpaper box and easter-egg box appear as
 `use ITEM_ID` in both `available_actions` and `available_action_specs`. They are
 never exchanged automatically.
 
+Optional saved bookkeeping is also visible in the full state. Pending choice
+`details.draw_constraints` preserves fixed rarity and slot minimums across
+rerolls; `choice_uid` and `event_counts` scope reroll triggers to the same
+choice, not the entire spin. `stats.next_choice_uid` allocates identities
+without RNG. `stats.choice_round_progress` and `choice_round_streak` track
+completed reward phases: multiple picks in one spin are not multiple rounds,
+and a skipped reward breaks the streak. Essence baselines reset at acquisition
+or a stabilized repeat use. Missing fields in legacy saves start with empty
+progress/default counters; no schema version migration is required.
+
+The three `flags.choice_minimum_*` counters retain explicit zero values
+after consumption, matching legacy defaults installed on load. Rerolling
+keeps the current group's candidate count and constraints; it neither
+reapplies candidate-count bonuses nor spends next-new-choice flags/hooks.
+An exhausted item pool may return fewer candidates, including an empty
+skippable reward. Empty rewards expose `skip`, not `choose` or `reroll`;
+no compensation or duplicate owned item is invented.
+Fallback draws also respect slot minimums and exact fixed tiers. A constrained
+pool can produce a smaller or empty skippable reward even when other tiers
+still have stock. Internal membership redraw trials emit no choice events;
+only the final published reroll candidates do. Ordinary draw order is unchanged.
+Automatic item grants likewise omit exhausted rewards without aborting a
+removal/periodic action; explicit tiers do not substitute another rarity.
+Other effects of the action continue unchanged. No new save fields are needed.
+
+`stats.round_event_values` and `stats.round_removed_values` retain the current
+round's event amounts and removed ingredient `(rarity, base)` pairs across
+single-action reloads. Both reset when the next valid spin starts. Missing
+legacy fields default to `{}` / `[]`; global removal history is not guessed
+to be the current round. An old save cannot recover context that was never
+written, but loads normally and records future actions correctly.
+
+`stats.observed_content` is optional per-save discovery bookkeeping with
+`ingredients`, `items`, and `essences` ID lists. Published pending queues and
+owned content count as observable; rejected internal draw trials do not.
+It does not emit acquisition events or draw RNG. Legacy saves seed it from
+available state/history, not guessed unseen definitions.
+
 When an action is invalid, the process returns exit code `2` but still emits a
 single `[STATE]` line with `ok: false`, an error object, and the unchanged
 loaded state. A missing save can only report a minimal error envelope because
 there is no game state to load; the `available_actions` field then contains
 `new`.
+
+The core rejects all mutating actions after `won`/`lost`. With a pending reward,
+only its listed choice/skip/reroll actions are executable; `spin`, `remove`,
+`use`, and `toggle` wait until the queue is resolved. Rejected actions do not
+spend RNG, Tokens, items, or overwrite the save. Read-only status/help/inventory
+remain available after a run ends.
+
+`last_log` contains the complete latest public action's messages, including
+its reward/listener messages; it does not replay the previous action or truncate
+the chain to three lines. This is an action log, not a full causal animation
+timeline. Income-based essence conditions require an observed `stats.last_income`;
+a missing legacy field is unknown, not a measured 0g turn. A real 0g settlement
+still satisfies the normal parity/multiple/maximum rules.
